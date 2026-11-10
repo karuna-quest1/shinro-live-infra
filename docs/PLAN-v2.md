@@ -2,7 +2,7 @@
 
 > **What this document is.** The deployment plan for the Shinro demo infrastructure, written so that every technical term is explained from the ground up — with an everyday analogy — *before* it is used. No technical term has been removed. Each one is explained so you can use it confidently and explain it to someone else.
 >
-> **Sources.** The **Camunda to Temporal Changes** tab of `Shinro Deployment Tracker (6).xlsx` (rows cited as `T-10`, `T-28`, … meaning "tracker row 10, row 28") and `image.png` (the architecture diagram). The old repo `../shinro-demo-infra` is used **only as a source of patterns**. We do not reuse its EC2 instance, its stack, its SSM names or its ECR repositories.
+> **Sources.** The **Camunda to Temporal Changes** tab of `Shinro Deployment Tracker (6).xlsx` (rows cited as `T-10`, `T-28`, … meaning "tracker row 10, row 28") and `image.png` (the architecture diagram). The app team's **demo `DEPLOYMENT.md`** (branch `feat/demo-graph`, PR #395) — what the demo as actually built needs from this plan; its decisions and gaps are folded in below and marked **(DEPLOYMENT)**. The old repo `../shinro-demo-infra` is used **only as a source of patterns**. We do not reuse its EC2 instance, its stack, its SSM names or its ECR repositories.
 
 ---
 
@@ -21,6 +21,16 @@ The user flow has been redesigned. Five changes, and they ripple through everyth
 
 Two of these contradict things written earlier, and both are called out where they appear: change 2 contradicts **T-13** ("reuse the existing pool, do not create a new one"), and change 5 defers **T-35**.
 
+**Then, from the app team's demo `DEPLOYMENT.md` (how the demo was actually built):**
+
+| # | Change | Biggest consequence |
+|---|---|---|
+| 7 | **Generated code is built and tested inside the user's terminal container** by `migrate-agent`, not by tool-exec + CodeBuild | **Stack 8 is dropped** (4.18), along with the `session-worker` ECR repo and `codebuild:StartBuild`. A session is **Temporal + terminal**, no separate worker image |
+| 8 | **The session is leased when code analysis starts**, not when migration starts | 2.6 rewritten |
+| 9 | **The UI is served by nginx on the Shinro EC2** | Three more CloudFront behaviours (`/assets/*`, `/login`, `/settings`) → EC2 (1.11) |
+| 10 | **Terminal pods call back into the API** (CLI sign-in, LLM turns) | New SG rule EKS → Shinro EC2, through an internal nginx listener exposing only the CLI routes (Stack 1, Stack 6) |
+| 11 | **Decisions closed:** Go modules via an in-VPC proxy (4.17), no warm pool at launch (4.19), the API trusts oauth2-proxy headers (4.21), generated code is lost if a pod is replaced (4.22) | See each decision |
+
 ---
 
 ## How to read this document
@@ -30,7 +40,7 @@ Two of these contradict things written earlier, and both are called out where th
 | **Part 0** | The whole system as a one-page story, plus the hostname map | First. Always |
 | **Part 1** | Fundamentals: networking, AWS, web, login, Kubernetes, CDK. Each term gets "in one sentence → analogy → how it's used here" | When any word in Parts 2–5 feels fuzzy |
 | **Part 2** | Step-by-step walk-throughs: "what happens when a user clicks X" | Before explaining the system to anyone |
-| **Part 3** | The CDK plan: stacks, what goes in each, build order | When writing code |
+| **Part 3** | The CDK plan: stacks, what goes in each, build order, runtime config, releases, go-live checklist | When writing code |
 | **Part 4** | Open decisions, with options and a recommendation | Before writing code |
 | **Part 5** | Gotchas: what goes wrong, why, and how to avoid it | While building, and when answering "but what about…?" |
 | **Part 6** | Glossary: every term, alphabetical | Any time |
@@ -52,10 +62,10 @@ Picture a **conference centre that hosts several separate trade shows at once**.
 - **The receptionist who walks every visitor to the right room** is **nginx**, running on the **Shinro EC2** server. It is the single front door into the private part of the building.
 - **Two demo rooms belong to the Temporal show:**
   - **`demo-camunda-instance.shinro.ai`** — one **shared** Camunda instance that every Temporal-stream visitor looks at. It lives on its own private server with no public address.
-  - **`demo-temporal-ui.shinro.ai`** — one address, with **a different room behind it for every visitor**. The receptionist reads your badge and walks you to *your* room; there is no room number to type, and none to share. Each room holds that visitor's own Temporal server, a worker running the code our tool generated for them, **and a live terminal** they can type into from the chat page. Rooms are demolished after **2 days**.
+  - **`demo-temporal-ui.shinro.ai`** — one address, with **a different room behind it for every visitor**. The receptionist reads your badge and walks you to *your* room; there is no room number to type, and none to share. Each room holds that visitor's own Temporal server **and a live terminal** they can type into from the chat page; the code our tool generates for them is built, tested and run inside that terminal. Rooms are demolished after **2 days**.
 - **The private rooms are built inside EKS**, a Kubernetes cluster. Kubernetes is the building manager that finds space, sets rooms up and keeps them running.
 - **The brochure stands** are **CloudFront + S3**: the public pages for the main site and every stream, cached worldwide.
-- **The utility rooms** are AWS services: **Route 53** (phone book), **ACM** (certificate office), **Secrets Manager** (safe), **CloudWatch** (CCTV and alarms), **ECR** (image warehouse), **CodeBuild** (an isolated workshop), and the **LLM API** (an outside consultant we pay for).
+- **The utility rooms** are AWS services: **Route 53** (phone book), **ACM** (certificate office), **Secrets Manager** (safe), **CloudWatch** (CCTV and alarms), **ECR** (image warehouse), and the **LLM API** (an outside consultant we pay for).
 - **The blueprint** is the **CDK** code we are going to write. It describes all of the above in TypeScript, and AWS builds it.
 
 Keep this picture. Every section below fills in one part of it.
@@ -69,6 +79,7 @@ This table is the backbone of the whole design. **Every hostname belongs to exac
 | `shinro.ai` | none (company) | Public | CloudFront → S3 | Marketing home |
 | `temporal.shinro.ai` (path `/`) | temporal | Public | CloudFront → S3 | Stream page with the two buttons |
 | `temporal.shinro.ai/chat/<convid>` | temporal | **Logged in** | CloudFront → nginx → shinro-api/UI | The app |
+| `temporal.shinro.ai/assets/*`, `/login`, `/settings` | temporal | Mixed | CloudFront → nginx (static UI files) | The UI's own files and routes (DEPLOYMENT decision 1) |
 | `temporal.shinro.ai/v2/*` | temporal | **Logged in** | CloudFront → nginx → shinro-api | API and WebSocket |
 | `temporal.shinro.ai/oauth2/*` | temporal | Login machinery | CloudFront → nginx → oauth2-proxy-temporal | Start + callback |
 | `demo-camunda-instance.shinro.ai` | temporal | **Logged in** | A record → nginx → Camunda private IP | Shared demo Camunda |
@@ -222,7 +233,7 @@ AWS publishes CloudFront's IP ranges as `com.amazonaws.global.cloudfront.origin-
 - **In our system:** the Shinro EC2 runs `nginx`, **one `oauth2-proxy` per stream**, `shinro-api`, `redis` and `tool-exec` as one Compose stack.
 
 ### ECR (Elastic Container Registry)
-AWS's private warehouse for Docker images. EC2 and EKS pull from it; we push the API, tool-exec, Temporal and generated-worker images to it.
+AWS's private warehouse for Docker images. EC2 and EKS pull from it; we push the API, tool-exec, Temporal and terminal images to it.
 
 ### Redis
 A very fast in-memory key-value store. In the diagram it holds Shinro's **state** and the **run lock** — a marker stopping one user from running two migrations at once. It will also hold the **session leases** (2.6).
@@ -563,7 +574,11 @@ Conceptually nginx answers two questions in order:
 | `/chat/*` | Shinro EC2 | **Disabled**, forward all cookies/headers/query | The logged-in app |
 | `/v2/*` | Shinro EC2 | **Disabled**, forward everything, WebSocket-capable | API and chat stream |
 | `/oauth2/*` | Shinro EC2 | **Disabled**, forward everything | Login start and callback |
+| `/assets/*` | Shinro EC2 | Cached (hashed filenames) | The UI's JS/CSS, served by nginx (DEPLOYMENT decision 1) |
+| `/login`, `/settings` | Shinro EC2 | **Disabled** | UI routes that must not fall through to S3 |
 | `*` (default) | S3 | Cached | Public marketing pages |
+
+> **Why the UI paths go to the EC2:** the built UI is served by nginx on the Shinro EC2, not from S3. Without these behaviours, `/assets/*`, `/login` and `/settings` would fall into the default and come from S3. **Consequence:** the public stream pages in S3 must not use an `/assets/` path of their own — it is claimed by the UI on every hostname.
 
 - **CloudFront Function**: a tiny JavaScript that runs at the edge on every request. Ours reads the `Host` header and rewrites the path, so `temporal.shinro.ai/` becomes `/temporal.shinro.ai/index.html` in S3 — the "site by host" idea from the diagram.
 - **OAC (Origin Access Control)**: lets *only* CloudFront read the private S3 bucket, so nobody can bypass the CDN.
@@ -573,7 +588,7 @@ Conceptually nginx answers two questions in order:
 
 ### Kubernetes ("k8s")
 - **In one sentence:** a system that runs containers across a group of servers, restarts them when they crash, and keeps them isolated.
-- **Analogy:** a building manager. You describe what you want ("a room with a Temporal server and a worker, max 1 CPU"), and they find space, set it up and maintain it.
+- **Analogy:** a building manager. You describe what you want ("a room with a Temporal server and a terminal, max 3 CPU"), and they find space, set it up and maintain it.
 
 ### EKS (Elastic Kubernetes Service)
 AWS runs the Kubernetes brain (the **control plane**); you supply the servers that run containers (the **nodes**).
@@ -586,14 +601,14 @@ AWS runs the Kubernetes brain (the **control plane**); you supply the servers th
 | **Control plane** | The Kubernetes API and brain, run by AWS | The manager's office | Private endpoint (gotcha 5.9) |
 | **Node** | A server (EC2) running containers | A floor | |
 | **Node group** | A set of identical nodes with min/max, able to scale | "1 to N floors" | Sized for ~20 sessions (T-30) |
-| **Pod** | Smallest unit: one or more containers running together | A single office | "Temporal + worker" per session |
-| **Deployment** | "Keep N copies of this pod running" | A standing instruction | Temporal dev server, worker |
+| **Pod** | Smallest unit: one or more containers running together | A single office | "Temporal + terminal" per session |
+| **Deployment** | "Keep N copies of this pod running" | A standing instruction | Temporal dev server, terminal |
 | **Service** | A stable address in front of pods | The office's fixed extension | |
 | **NodePort** (Service type) | Opens a fixed port (30000–32767) on **every** node's IP, forwarding to the pods | A number that rings through on any floor | How nginx reaches a session without a load balancer (T-31) |
 | **Namespace** | A named, isolated folder in the cluster | A private suite with its own door | **One per user session** (T-28) |
 | **ResourceQuota / LimitRange** | Caps total CPU/RAM per namespace / per container | A power budget per suite | T-30 |
-| **NetworkPolicy** | A firewall *between pods* | Internal doors that open only for certain people | T-32: the worker may reach only its own Temporal |
-| **securityContext** | Per-container safety: `runAsNonRoot`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation: false` | "No master keys, no moving the furniture" | T-32 — the worker runs **LLM-generated code** |
+| **NetworkPolicy** | A firewall *between pods* | Internal doors that open only for certain people | T-32: the session may reach only its own Temporal (plus the CLI listener and module proxy, 4.17) |
+| **securityContext** | Per-container safety: `runAsNonRoot`, `readOnlyRootFilesystem`, `allowPrivilegeEscalation: false` | "No master keys, no moving the furniture" | T-32 — the terminal runs **LLM-generated code** |
 | **Manifest** | A YAML file describing k8s objects | The written instruction | The session template |
 | **kubectl** | The command-line tool for the cluster | The phone to the office | |
 | **ClusterRole / RBAC** | Kubernetes' own permission system | Staff access levels | The session controller gets a limited role |
@@ -638,7 +653,7 @@ The local reference stack is `~/Playground/camunda-full`, **Camunda 8.8.32**, an
 | **DLM (Data Lifecycle Manager)** | Scheduled EBS snapshots with automatic cleanup | Daily Camunda disk backups (T-19) |
 | **Route 53** | AWS's DNS | The `shinro.ai` hosted zone |
 | **Hosted zone** | All DNS records for one domain | `shinro.ai` — already exists, so **import, never create** |
-| **CodeBuild** | Managed throwaway build machines | Builds generated worker images in isolation (T-34) |
+| **CodeBuild** | Managed throwaway build machines | **Not used** — generated code is built in the sandbox (4.18) |
 | **SNS** | Notifications | Alarm emails |
 | **AWS Budgets** | Alerts when spend crosses a threshold | The "trial cost" alarm |
 | **Lambda** | Run a small function with no server | The Camunda health checker |
@@ -690,7 +705,7 @@ The Shinro CLI is a desktop program. This brings it to the chat page: the user c
 
 **Why tmux:** closing the panel, refreshing the page or sleeping the laptop kills nothing. The user reattaches to the same screen and long commands keep running. Each chat gets its own tmux session and folder (`~/chats/<id>/`), with up to **5 retained** and the least recently used closed first.
 
-**What else is in the container:** the Shinro CLI, the **Go 1.26** toolchain, and a Temporal dev server — so the user can generate, build and run migrated code without leaving the page. That toolchain is what forces decisions 4.17 and 4.18.
+**What else is in the container:** the Shinro CLI, the **Go 1.26** toolchain and **`migrate-agent`**, which generates, builds and tests the migrated code right here — so the user never leaves the page, and nothing is built anywhere else (4.18). The session's Temporal dev server runs beside it. That toolchain is what forces decisions 4.17 and 4.18. The image is about **590 MB unpacked** (measured on arm64), smaller than first feared (4.19).
 
 ---
 
@@ -731,7 +746,7 @@ The Shinro CLI is a desktop program. This brings it to the chat page: the user c
 
 1. `/chat/*` matches a CloudFront behaviour → the Shinro EC2, uncached.
 2. **nginx** runs `auth_request` against **oauth2-proxy-temporal**. The cookie is valid → `202` plus `X-Auth-Request-Email: jane@acme.com`.
-3. nginx **overwrites** the identity headers (gotcha 5.7) and proxies to the UI/API.
+3. nginx **overwrites** the identity headers (gotcha 5.7) and serves the UI's static files itself, proxying API calls to shinro-api. shinro-api creates its own session from those headers (4.21).
 4. With no `<convid>`, shinro-api creates or resumes a conversation and redirects to `/chat/<convid>`.
 5. The chat WebSocket runs over `/v2/*`, through CloudFront and nginx, with the `Upgrade` headers forwarded.
 6. Everything the user does from here — assessment, migration, console links — happens inside this page.
@@ -747,16 +762,17 @@ The Shinro CLI is a desktop program. This brings it to the chat page: the user c
 6. Elasticsearch (9200) and Zeebe's internal ports are never reachable from outside (T-12).
 7. The instance is **shared**: every temporal-stream user sees the same Camunda. Which is why it must be effectively read-only (decision 4.11) — one user must not be able to change what the next user sees.
 
-## 2.6 The user starts a migration (the session lifecycle, T-29/T-30/T-34)
+## 2.6 The user starts code analysis (the session lifecycle, T-29/T-30/T-34)
 
-1. **Lease:** shinro-api reserves a session for this user. If a pre-made namespace waits in the **warm pool**, use it; otherwise create one. The lease is **idempotent per user**: asking twice returns the same session, and later migrations reuse it.
-2. **Lease record:** Redis stores, keyed by the user's email, the Kubernetes namespace name, the NodePort address and the expiry time. The session also gets an **internal id**, used for the namespace name, the Redis key and the worker image tag — but it **never appears in a URL** (decision 4.6).
-3. **Code generation:** tool-exec generates the Temporal project using the **LLM API**.
-4. **Build:** the generated project is built into a Docker image by **CodeBuild** — an isolated machine, **never the Shinro host** — and pushed to **ECR**.
-5. **Run:** a worker pod starts in the user's namespace on that migration's **task queue**, replacing the previous migration's worker.
-6. **Validate:** the validation tool connects from the Shinro EC2 to the session's Temporal **gRPC (7233)** through its NodePort, runs sample workflows and reports results (T-45, T-48).
-7. **Link:** the app shows the user **`https://demo-temporal-ui.shinro.ai`** — the same URL for every user.
-8. **Expiry:** after the **TTL** (time-to-live — 2 days from assignment) the session controller **deletes** the namespace and the Redis entry. There are no backups; sessions are throwaway by design (T-33).
+> **Changed (DEPLOYMENT):** the session is leased when **code analysis** starts, not when migration starts, and the code is generated, built and tested **inside the user's terminal container** by `migrate-agent` — not by tool-exec and CodeBuild.
+
+1. **Lease:** shinro-api's **session controller** (Shinro application code, 4.7) reserves a session for this user and creates the namespace through the EKS API (Stack 7). There is no warm pool at launch (4.19). The lease is **idempotent per user**: asking twice returns the same session, and later migrations reuse it.
+2. **Lease record:** Redis stores, keyed by the user's email, the Kubernetes namespace name, the NodePort addresses and the expiry time. The session also gets an **internal id**, used for the namespace name and the Redis key — but it **never appears in a URL** (decision 4.6).
+3. **Analyse and generate:** `migrate-agent` runs in the user's terminal container, calling back into shinro-api for sign-in and LLM turns (the EKS → API rule in Stack 1). It writes the Temporal project into `~/chats/<id>/`.
+4. **Build and test:** in the same container, with Go 1.26 and Go modules from the in-VPC proxy (4.17). Each migration uses **its own Temporal task queue**. Nothing is built on the Shinro host, and no image is pushed (4.18).
+5. **Validate:** the validation tool connects from the Shinro EC2 to the session's Temporal **gRPC (7233)** through its NodePort, runs sample workflows and reports results (T-45, T-48).
+6. **Link:** the app shows the user **`https://demo-temporal-ui.shinro.ai`** — the same URL for every user.
+7. **Expiry:** after the **TTL** (time-to-live — 2 days from assignment) the session controller **deletes** the namespace and the Redis entry. There are no backups; sessions are throwaway by design (T-33), and generated code is lost with them (4.22).
 
 ## 2.7 The user opens their Temporal session at `demo-temporal-ui.shinro.ai`
 
@@ -822,15 +838,16 @@ lib/stacks/
   camunda-host-stack.ts           # Camunda EC2 (private), DLM backups, alarms
   eks-stack.ts                    # EKS cluster, node group, add-ons, access entries
   registry-stack.ts               # ECR repositories
-  build-stack.ts                  # CodeBuild project for generated workers
   observability-stack.ts          # Log groups, dashboards, cost + capacity alarms
+  # (no build-stack.ts: CodeBuild dropped, decision 4.18)
 lib/constructs/
   stream-identity.ts              # NEW: everything one stream needs in Cognito. Instantiated per stream
   ...                             # Others copied and adapted from shinro-demo-infra
 assets/shinro-bundle/             # docker-compose.yml, nginx.conf.template,
                                   #   oauth2-proxy config template (rendered once per stream), render-env.sh
 assets/camunda-bundle/            # Camunda compose (from the "jetson" stack, T-11), render-env.sh
-k8s/                              # Session template: namespace, quota, netpol, Temporal, terminal, worker
+k8s/session-template/             # Session template: namespace, quota, netpol, Temporal, terminal
+                                  #   Moves here from the app repo's docker/demo-terminal/kind/session.yaml.tmpl
                                   #   Keep it address-agnostic: the same manifests run on a local
                                   #   kind cluster, which is how the terminal work is developed
 scripts/add-demo-user.sh          # <stream> <email> onboarding helper
@@ -866,7 +883,7 @@ Everything per-stream is driven by one list in `cdk.json`, so adding a stream is
 | `lib/constructs/runtime-config.ts` | Non-secret config in SSM by name; generated secrets in Secrets Manager; secret ARNs published as SSM params | New prefix; **per-stream** cookie secrets and client secrets |
 | `lib/constructs/identity.ts` | The shape of a Cognito pool + client + domain in CDK | Becomes `stream-identity.ts`, instantiated once per stream, with passwordless settings added |
 | `lib/constructs/observability.ts` | One log group per Compose service; CloudWatch agent for memory and disk | New service list, including N oauth2-proxies |
-| `storage.ts`, `registry.ts`, `ci-role.ts` | Buckets, ECR, CI role | Renamed; new repos for worker and Temporal images |
+| `storage.ts`, `registry.ts`, `ci-role.ts` | Buckets, ECR, CI role | Renamed; new repos for the terminal and Temporal images. **CI is a new workflow** — not the app repo's `.github/workflows/demo-deploy.yml`, which deploys the old `ShinroDemoStack` and doesn't build the terminal image |
 
 ## 3.3 Stack by stack
 
@@ -880,8 +897,10 @@ Everything per-stream is driven by one list in `cdk.json`, so adding a stream is
 |---|---|---|---|
 | `ShinroCfSg` | 80 | CloudFront prefix list only | App paths arrive via CloudFront |
 | `ShinroPublicSg` | 443 (+80 for redirect) | anywhere | The two demo consoles are reached directly. oauth2-proxy protects them |
-| `CamundaSg` | Operate HTTP + Zeebe 26500 | **Shinro SG only** | T-10 |
+| `CamundaSg` | 8080, 26500, 18080 | **Shinro SG only** | T-10; ports per 4.16 and `CAMUNDA-DEPLOYMENT.md` §2 |
 | EKS node SG | NodePort 30000–32767 | **Shinro SG only** | T-31 |
+| `ShinroInternalSg` (on the Shinro EC2) | the internal CLI listener (e.g. 8000) | **EKS node SG only** | Terminal pods call the API for CLI sign-in and LLM turns. nginx on this listener exposes **only the CLI routes**, never the whole API (DEPLOYMENT gap) |
+| EKS cluster SG | 443 (Kubernetes API) | **Shinro SG only** | The session controller creates namespaces through the private endpoint |
 
 - Optional **VPC endpoints** (free S3 gateway, plus ECR and SSM) to cut NAT data costs.
 
@@ -891,7 +910,7 @@ Everything per-stream is driven by one list in `cdk.json`, so adding a stream is
 - `HostedZone.fromLookup({ domainName: "shinro.ai" })` — **import**, never create.
 - **ACM certificate** in **us-east-1** for `shinro.ai` + `*.shinro.ai`, DNS-validated (ACM asks for a DNS record to prove ownership; CDK creates it). This one is for CloudFront.
 - **S3** site bucket: private, readable only through **OAC**, one folder per hostname.
-- **CloudFront distribution:** aliases `shinro.ai` and `*.shinro.ai`; the host→folder **CloudFront Function**; the four behaviours from 1.11 (`/chat/*`, `/v2/*`, `/oauth2/*` → EC2 uncached; default → S3).
+- **CloudFront distribution:** aliases `shinro.ai` and `*.shinro.ai`; the host→folder **CloudFront Function**; the behaviours from 1.11 (`/chat/*`, `/v2/*`, `/oauth2/*`, `/login`, `/settings` → EC2 uncached; `/assets/*` → EC2 cached; default → S3). The CloudFront Function must apply to the S3 default only.
 - **Route 53:**
   - Alias `shinro.ai` and `*.shinro.ai` → CloudFront. *The wildcard means a new stream subdomain needs no DNS change.*
   - **A records** `demo-camunda-instance` and `demo-temporal-ui` → the Shinro EIP. These override the wildcard (1.1).
@@ -930,7 +949,12 @@ For the **temporal** stream only (T-13, T-14) — **and only if decision 4.20 pi
 If Keycloak stays (the recommendation), **none of this is built**. The assessment tool's credential is a *Keycloak* client instead, created by the Camunda bundle and stored in Secrets Manager by Stack 5. Cognito is then used only at the edge, for our own users.
 
 ### Stack 4 — `RegistryStack` (T-31, T-34)
-ECR repositories: `shinro-live-api`, `shinro-live-tool-exec`, `shinro-live-temporal` (dev-server image), and `shinro-live-session-worker` (one image per migration — add a **lifecycle rule** deleting images after a few days, since sessions die in two). All with **scan on push**, so ECR checks each image for known vulnerabilities.
+ECR repositories: `shinro-live-api`, `shinro-live-tool-exec`, `shinro-live-temporal` (dev-server image, `temporalio/temporal:1.10.0`), and **`shinro-live-terminal`** (the session's terminal image: ttyd, tmux, CLI, Go 1.26, `migrate-agent`). All with **scan on push**, so ECR checks each image for known vulnerabilities.
+
+- **No `session-worker` repo:** generated code is built inside the terminal, not as an image (4.18).
+- **Tag every image with the commit SHA**, never `latest`, so any release can be rolled back.
+- **Build `linux/amd64`** on an amd64 runner. Only arm64 has been built so far, and emulating amd64 on a Mac is slow.
+- The terminal image carries a **pre-populated Go module cache**, so the first build isn't a cold download (4.17).
 
 ### Stack 5 — `CamundaHostStack` (T-10, T-11, T-12, T-19, T-20)
 **Purpose:** the windowless back office running the shared demo Camunda.
@@ -957,7 +981,7 @@ ECR repositories: `shinro-live-api`, `shinro-live-tool-exec`, `shinro-live-tempo
 | Shinro / OMS client | `orchestration` + `secret` | **`shinro-assessment`**, read-only | Same reason |
 
 - **OIDC provider:** Keycloak stays, per decision 4.20. Camunda's `CAMUNDA_SECURITY_AUTHENTICATION_OIDC_*` properties are generic, so pointing them at Cognito is *configurable* — but the `aud` check makes it unlikely to work (5.33). Instead, add **Cognito as an identity provider inside the `camunda-platform` realm** so the user's existing Cognito session logs them into Camunda silently.
-- **Seeding (T-15):** a one-time script deploying the demo BPMN workflows with an **admin** credential demo users never receive. ⚠ T-15 lists **OMS + banking**, but banking was removed from the jetson cluster on 2026-11-04, leaving OMS. **Confirm what is actually being seeded** before writing the script — the demo script depends on which workflows exist.
+- **Seeding (T-15):** a one-time script deploying the demo BPMN with an **admin** credential demo users never receive. **Seed the OMS app's one BPMN only** — T-15 lists OMS + banking, but banking was removed from the jetson cluster on 2026-11-04 and the demo shows only the OMS app (DEPLOYMENT gap). Seed what the demo shows.
 - **Backups (T-19):** a **DLM** policy finding this disk by tag, daily snapshots, keep 7. These matter more than usual now, because the instance is **shared** — if one user corrupts it, every user is affected until it's restored.
 - **Alarms (T-20):** CloudWatch agent `mem_used_percent` and `disk_used_percent`.
 - **Health check:** a Route 53 health check **cannot reach a private IP**. Instead a scheduled job (a cron on the Shinro EC2, or a small Lambda in the VPC) calls Camunda's health URL and publishes a custom CloudWatch metric; the alarm watches that.
@@ -967,7 +991,8 @@ ECR repositories: `shinro-live-api`, `shinro-live-tool-exec`, `shinro-live-tempo
 **Purpose:** the front door, all the guards, and the main application.
 
 - **New EC2** in a **public** subnet with an **EIP** (allocated separately, as in the old repo). SGs: `ShinroCfSg` + `ShinroPublicSg`.
-- **Compose services:** `nginx`, **one `oauth2-proxy` per stream**, `shinro-api`, `redis`, `tool-exec`. The compose file and the oauth2-proxy config are **templates rendered once per stream** at boot by `render-env.sh`, driven by the stream list in SSM. Never hand-maintain N copies.
+- **Compose services:** `nginx` (also serving the **built UI** as static files — DEPLOYMENT decision 1), **one `oauth2-proxy` per stream**, `shinro-api`, `redis`, `tool-exec`. The compose file and the oauth2-proxy config are **templates rendered once per stream** at boot by `render-env.sh`, driven by the stream list in SSM. Never hand-maintain N copies.
+- **Redis on a persistent volume** — a named volume on the EBS disk, not the container's own layer. It holds session leases **and** live CLI tokens (gotcha 5.29).
 - **TLS certificate** for `demo-camunda-instance.shinro.ai` and `demo-temporal-ui.shinro.ai`: decision 4.5.
 - **nginx configuration:**
 
@@ -977,9 +1002,11 @@ ECR repositories: `shinro-live-api`, `shinro-live-tool-exec`, `shinro-live-tempo
 | `:80` | any | `/chat/*`, `/v2/*` | Check origin secret → `auth_request` → shinro-api |
 | `:443` | `demo-camunda-instance.shinro.ai` | all | `auth_request` (temporal proxy) → Camunda private IP |
 | `:443` | `demo-temporal-ui.shinro.ai` | all | `auth_request` (temporal proxy) → session lookup by email (4.7) → that user's NodePort, or the "start a migration" page |
+| `:80` | any | `/assets/*`, `/login`, `/settings` | Check origin secret → the built UI's static files |
+| internal (e.g. `:8000`) | — | **CLI routes only** | For terminal pods (`ShinroInternalSg`). Everything else on this listener → 404 |
 
-  In every block: **remove and re-set** the `X-Auth-Request-*` headers (gotcha 5.7), and forward `Upgrade`/`Connection` for WebSockets.
-- **IAM role:** read `/shinro/live/*` parameters and the named secrets, pull from ECR, `eks:DescribeCluster`, `codebuild:StartBuild`, plus an **EKS Access Entry** (created in Stack 7) granting the Kubernetes permissions the session controller needs.
+  In every block: **remove and re-set** the `X-Auth-Request-*` headers (gotcha 5.7), and forward `Upgrade`/`Connection` for WebSockets. On `/v2/demo/terminal`, raise the idle timeouts (gotcha 5.27).
+- **IAM role:** read `/shinro/live/*` parameters and the named secrets, pull from ECR, `eks:DescribeCluster`, plus an **EKS Access Entry** (created in Stack 7) granting the Kubernetes permissions the session controller needs. No `codebuild:StartBuild` (4.18).
 - **Secrets:** per-stream client secrets and cookie secrets, LLM API keys ("our keys, our cost").
 
 ### Stack 7 — `EksStack` (T-28, T-30, T-31, T-32)
@@ -987,33 +1014,36 @@ ECR repositories: `shinro-live-api`, `shinro-live-tool-exec`, `shinro-live-tempo
 
 - **Module:** `aws-cdk-lib/aws-eks`, or `@aws-cdk/aws-eks-v2-alpha` which avoids the extra kubectl Lambda layer (gotcha 5.10).
 - **Endpoint access PRIVATE:** the Kubernetes API is reachable only from inside the VPC. While building you may also allow PUBLIC access restricted to your office IP; otherwise run kubectl on the Shinro EC2 via Session Manager.
-- **Managed node group** in private subnets, e.g. `m7i.large`, min 1, max sized for about **20 sessions** (T-30's working figure), tuned by the load test (T-36).
-- **Add-ons:** `vpc-cni` with `enableNetworkPolicy: "true"`, `coredns`, `kube-proxy`, and optionally the CloudWatch Observability add-on for Container Insights (T-33).
-- **Access entry:** the Shinro EC2 role → a custom **ClusterRole** covering only namespaces, deployments, services, quotas and network policies. **Not cluster-admin.**
+- **Managed node group** in private subnets, `m7i.large` (2 vCPU, 8 GiB), sized for about **20 sessions** (T-30's working figure), tuned by the load test (T-36). **Sizing (DEPLOYMENT):**
+
+| Container | Requests | Limits |
+|---|---|---|
+| Terminal | 500m CPU, 1 GiB | 2 CPU, 3 GiB |
+| Temporal | 100m CPU, 256 MiB | 1 CPU, 1 GiB |
+| One session | 600m CPU, ~1.25 GiB | 3 CPU, 4 GiB |
+
+  By memory requests that is about **5 sessions per node**, so 20 users need **4–5 nodes**. An estimate only: concurrent Go builds use far more than their requests. Set the final count from the load test.
+- **Add-ons:** `vpc-cni` with `enableNetworkPolicy: "true"`, `coredns`, `kube-proxy`, and optionally the CloudWatch Observability add-on for Container Insights (T-33). **No Calico:** the in-VPC module proxy (4.17 option c) needs only IP-based rules, which `vpc-cni` handles.
+- **Access entry:** the Shinro EC2 role → a custom **ClusterRole** covering only namespaces, deployments, services, quotas and network policies. **Not cluster-admin.** The session controller that uses it is **Shinro application code** (it exists today only as `LocalSessionController` for kind); this stack provides only the cluster role.
 - **Firewall:** node SG allows the NodePort range from the Shinro SG only (T-31).
 - **No reference namespace.** T-35 is deferred with `reference.shinro.ai` (decision 4.14).
 - **What CDK does NOT do:** create per-user session namespaces. The **session controller** (application code in Shinro) creates and deletes them at runtime from `k8s/session-template/`. Each session gets:
   - a **namespace**
   - a **ResourceQuota** + **LimitRange** (CPU/RAM caps)
-  - a **NetworkPolicy**: deny by default; pods may reach their own Temporal, DNS, the Shinro API, and — only because the terminal needs it — Go module hosts (decision 4.17)
-  - a **Temporal dev server** + a NodePort Service for UI (8233) and gRPC (7233). The UI needs **no path configuration**: nginx gives it a whole hostname, so it serves from the root as it does by default (decision 4.6)
-  - a **terminal container** (ttyd, tmux, the Shinro CLI, Go 1.26) with its own NodePort for the API to reach ttyd (1.15)
-  - a **worker** with the T-32 **securityContext**: non-root, no privilege escalation, CPU/RAM limits, and a read-only root filesystem **with writable `emptyDir` mounts** for the home directory and the Go build cache (gotcha 5.25)
+  - a **NetworkPolicy**: deny by default; pods may reach their own Temporal, DNS, the Shinro EC2's internal CLI listener, and the in-VPC Go module proxy (decision 4.17)
+  - a **Temporal dev server** + a NodePort Service for UI (8233) and gRPC (7233). The UI needs **no path configuration**: nginx gives it a whole hostname, so it serves from the root as it does by default (decision 4.6). **Today the UI is cluster-only and accepts traffic only from the terminal** — the template must add the 8233 NodePort and allow it from the Shinro EC2
+  - a **terminal container** (ttyd, tmux, the Shinro CLI, Go 1.26, `migrate-agent`) with its own NodePort for the API to reach ttyd (1.15). It builds and runs the generated code, so there is **no separate worker** (4.18). It carries the T-32 **securityContext**: non-root, no privilege escalation, CPU/RAM limits, and a read-only root filesystem **with writable `emptyDir` mounts** for the home directory and the Go build cache (gotcha 5.25)
+  - **Template changes from kind:** `imagePullPolicy: Never` → `IfNotPresent` with ECR image names; `SHINRO_API_IP` set to the Shinro EC2's **private** IP (used both as the API endpoint and in the network rules)
   - **ephemeral-storage requests and limits** in the LimitRange — five retained chats, each with its own sample-app copy plus a Go module cache, fill a node disk quickly (gotcha 5.28)
 
 Node-group configuration this forces: **`singleProcessOOMKill`** is a *kubelet* setting under cgroup v2, not a pod field, so it goes in the node group's launch template / kubelet extra args — not the session manifest (gotcha 5.30).
 
-### Stack 8 — `BuildStack` (T-34)
-**Purpose:** a clean, isolated workshop for untrusted code.
-
-- A **CodeBuild project** with no access to anything sensitive.
-- **Input:** the generated project, zipped to an S3 location. **Output:** an image `shinro-live-session-worker:<session-id>` in ECR.
-- shinro-api starts a build (`codebuild:StartBuild`) and polls until done.
-- **Why:** the worker code is written by an LLM and is therefore untrusted. T-34 forbids building it on the Shinro host, where it would sit beside every secret and every user's session.
+### ~~Stack 8 — `BuildStack` (T-34)~~ — **dropped** (decision 4.18)
+The generated code is built and tested inside the user's terminal container by `migrate-agent`. T-34's concern — untrusted LLM-written code must not be built on the Shinro host — is still met, because the sandbox is not the Shinro host. Dropping it removes a stack, an ECR repo, an IAM permission and a polling loop.
 
 ### Stack 9 — `ObservabilityStack` (T-20, T-33)
 - One log group per Compose service (including each oauth2-proxy), plus Container Insights.
-- **Alarms:** Camunda disk/memory/health; Shinro disk/memory; EKS node capacity; session count (a custom metric from the API); failed session starts; **AWS Budgets** cost alarm.
+- **Alarms:** Camunda disk/memory/health; Shinro disk/memory; EKS node capacity and disk pressure; session count against the cap of 20 (a custom metric from the API); failed session starts; **LLM spend per day** (sent to CloudWatch by the API); **AWS Budgets** cost alarm.
 - Add **per-stream login failure** visibility: a metric filter on oauth2-proxy logs for repeated 403s tells you someone was added to the wrong pool (gotcha 5.18).
 - An **SNS topic** emailing the team when an alarm fires.
 
@@ -1023,24 +1053,86 @@ Each step is independently deployable and testable. **Don't advance until the "p
 
 | # | Do | This proves | Rows |
 |---|---|---|---|
-| 0 | Settle the Part 4 decisions. `cdk bootstrap` | — | — |
+| 0 | Settle the Part 4 decisions. `cdk bootstrap`. **App side (DEPLOYMENT Phase 1):** the four app blockers done — demo login and entry, LLM key and limits, EKS `SessionController`, hosting code changes — and PR #395 merged | The demo passes on kind with the real login, and `linux/amd64` images build | — |
 | 1 | NetworkStack | The VPC exists; private subnets reach the internet via NAT | T-10, T-31 |
 | 2 | IdentityStack with **one** stream (temporal): pool, Managed Login, SES, clients | A test user receives an OTP email and signs in on the Cognito page. `curl` obtains a client-credentials token | T-13 (superseded in part) |
 | 2a | Run the 1.8 runbook for a test email | They get a code and log in. After `admin-disable-user`, they can't | — |
-| 3 | RegistryStack + CamundaHostStack (trimmed Compose, Keycloak retained) | Camunda 8.8 starts privately on 8080/26500; a **`shinro-assessment`** Keycloak token is accepted; a demo user gets **403 on deploy/cancel/modify** (5.31); login works through nginx (5.32) | T-10, T-11, T-14, T-15, T-16 |
-| 4 | ShinroHostStack: nginx + **one** oauth2-proxy + the Camunda console route | `demo-camunda-instance.shinro.ai` logs in end to end | T-12, T-18 |
-| 5 | EdgeStack | `temporal.shinro.ai` serves the public page; `/oauth2/start` logs in; `/chat` and `/v2` reach the app | — |
-| 6 | EksStack + the session template + session controller + the email→session lookup | Two users open the same `demo-temporal-ui.shinro.ai` and each see **their own** session. A hand-set `X-Auth-Request-Email` changes nothing. After the TTL the page becomes "start a migration" | T-28, T-29, T-30, T-31, T-32 |
-| 6a | Terminal container in the session template + the `/v2/demo/terminal` relay | "Run in terminal" opens a shell in **your** sandbox; a refresh reattaches; the one-time code can't be replayed; `go build` works | — |
-| 7 | BuildStack **(only if 4.18 keeps it)** | A generated worker runs in the user's session | T-34 |
-| 8 | ObservabilityStack + DLM | Alarms fire when tested | T-19, T-20, T-33 |
+| 3 | RegistryStack + CamundaHostStack (trimmed Compose, Keycloak retained), and the OMS BPMN seeded | Camunda 8.8 starts privately on 8080/26500; a **`shinro-assessment`** Keycloak token is accepted; a demo user gets **403 on deploy/cancel/modify** (5.31); login works through nginx (5.32) | T-10, T-11, T-14, T-15, T-16 |
+| 4 | ShinroHostStack: nginx (with the built UI) + **one** oauth2-proxy + API + Redis + tool-exec + the Camunda console route | `demo-camunda-instance.shinro.ai` logs in end to end | T-12, T-18 |
+| 5 | EdgeStack | `temporal.shinro.ai` serves the public page; `/oauth2/start` logs in; `/chat`, `/v2` and the UI paths reach the app; a test user lands in a demo chat and connects to Camunda through the inventory scan | — |
+| 6 | EksStack + the session template + session controller + the email→session lookup | Two users open the same `demo-temporal-ui.shinro.ai` and each see **their own** session. A hand-set `X-Auth-Request-Email` changes nothing. After the TTL the page becomes "start a migration". `dev.sh probe`-style checks: one session can't reach another, the Kubernetes API or the metadata service | T-28, T-29, T-30, T-31, T-32 |
+| 6a | Terminal container in the session template + the `/v2/demo/terminal` relay + the internal CLI listener | "Run in terminal" opens a shell in **your** sandbox; a refresh reattaches; the one-time code can't be replayed; `go build` works; a pod reaches the CLI routes and **nothing else** on the API; `analyze` and `migrate-agent` both finish | — |
+| ~~7~~ | ~~BuildStack~~ — **dropped** (4.18) | — | T-34 |
+| 8 | ObservabilityStack + DLM + sandbox egress lock-down (the module proxy, 4.17) | Alarms fire when tested; a sandbox **can't** reach a random public HTTPS host, and Go builds still work | T-19, T-20, T-33 |
 | 9 | **Add the second stream** via config — a group, a client and a proxy, **no new pool** | A stream-A-only user gets 403 on stream B; a user added to **both** groups reaches both | — |
-| 10 | Load test; tune quotas and node max; give the Camunda concurrency number to the backend team | The system holds at the target number of users | T-17, T-36 |
+| 10 | Load test with **20 concurrent users**: watch LLM spend, the run lock, refusals at the cap and node capacity. Tune quotas and node count; give the Camunda concurrency number to the backend team. Then one full run as a real user, and open the HubSpot form | The system holds at 20 users, and the app team's go-live checklist passes | T-17, T-36 |
 
 **Two sequencing notes:**
 - **Why steps 2 and 3 come first:** T-14 (Camunda accepting Cognito tokens) is marked "riskiest, test early." If it fails, the Camunda design changes — find out before building nginx, CloudFront and EKS around it.
 - **Step 9 is not optional polish.** Building the second stream is what proves the stream list is really config-driven rather than one stream with hard-coded names. Do it before the design hardens.
 - **Dropping `reference.shinro.ai` removed a milestone.** In the earlier plan the read-only reference migration was a complete, demonstrable product before EKS sessions worked. Now **step 6 — per-user sessions — is on the critical path to the first demo.** If that worries you, decision 4.14 covers bringing a simplified version back.
+
+## 3.5 Runtime configuration (from the app team's DEPLOYMENT)
+
+Non-secret values live in SSM under `/shinro/live/temporal/…` and secrets in Secrets Manager; `render-env.sh` writes them into the env file at boot (3.2). **Never** put the Camunda client secret or LLM keys in `.env` files, images or the repo.
+
+**UI build values** — fixed at build time, so the UI is built per stream:
+
+```env
+VITE_API_URL=https://temporal.shinro.ai/v2
+VITE_WS_URL=wss://temporal.shinro.ai/v2
+```
+
+**API values on the Shinro EC2.** The Camunda block is **corrected** from DEPLOYMENT, which still described Cognito for Camunda: per 4.20 and `CAMUNDA-DEPLOYMENT.md` §6, the token comes from **Keycloak** and the client is **`shinro-assessment`**.
+
+```env
+FRONTEND_URL=https://temporal.shinro.ai
+COOKIE_SECURE=true
+
+DEMO_CAMUNDA_DEPLOYMENT_MODE=self_managed
+DEMO_CAMUNDA_AUTH_METHOD=oidc
+DEMO_CAMUNDA_ZEEBE_ADDRESS=grpc://<camunda-private-ip>:26500
+DEMO_CAMUNDA_REST_URL=http://<camunda-private-ip>:8080
+DEMO_CAMUNDA_OPERATE_URL=http://<camunda-private-ip>:8080
+DEMO_CAMUNDA_AUTH_URL=http://<camunda-private-ip>:18080/auth/realms/camunda-platform/protocol/openid-connect/token
+DEMO_CAMUNDA_CLIENT_ID=shinro-assessment          # secret from Secrets Manager; audience orchestration-api
+
+# Must be set or the demo has no target. Each session has its own Temporal.
+DEMO_TEMPORAL_ADDRESS=temporal:7233
+DEMO_TEMPORAL_UI_URL=https://demo-temporal-ui.shinro.ai
+
+DEMO_SESSION_TTL_HOURS=48
+DEMO_SESSION_MAX_ACTIVE=20
+```
+
+- Leave **`DEMO_TERMINAL_UPSTREAM` unset**: the session controller supplies each terminal's address.
+- `<camunda-private-ip>` is read from SSM `/shinro/live/camunda-private-ip` (Stack 5).
+- The demo catalog (`apps/api/etc/demo_catalog.yaml`) switches its secret references from `env:` to **`aws-sm:`**, so the Shinro EC2 role must be able to read those named secrets (Stack 6).
+
+## 3.6 Releasing a new version
+
+| What changed | How to release | Effect on users |
+|---|---|---|
+| API or tool-exec | Pull the new image (by SHA), then recreate **only** that service | Chats reconnect. Running terminals keep working |
+| UI | Build and replace nginx's static files | Users refresh |
+| Terminal image | Point the session template at the new tag | **New sessions only.** Never restart running terminals — that deletes the user's generated code (4.22) |
+| Session template | Ship it in the API release | New sessions only |
+| Camunda or EC2 hosts | Infra, after reading `cdk diff` | Editing UserData replaces the server (5.3). Plan downtime |
+
+**Rollback:** redeploy the previous SHA for the API or UI. For a bad terminal image, point the template back at the old tag; sessions already on it end at their 48-hour TTL, or delete them. **Test a rollback once before go-live.**
+
+## 3.7 Go-live checklist — the infra items
+
+The app team owns the full list in their DEPLOYMENT. These need infra:
+
+- [ ] A demo user gets from the HubSpot request through Cognito, the email code and login into the app.
+- [ ] The Camunda password and client secret appear in no logs, images or chat messages.
+- [ ] Expired sessions are deleted (namespace gone, Redis entry gone).
+- [ ] Someone owns adding and removing demo users and watching the HubSpot queue (4.15).
+- [ ] The LLM budget alarm, the session-count metric and the node-capacity alarm all fire in a test.
+- [ ] Rollback has been tested once (3.6).
+
+**Ownership, as agreed with the app team:** infra owns the network, hosts, Cognito, CloudFront/S3, ECR repos, the EKS cluster and its cluster role, Camunda, secrets and alarms. The app team owns the session controller, the session template's contents, the images, the UI build and the LLM limits.
 
 ---
 
@@ -1094,7 +1186,7 @@ Each user's Temporal session is served at **`demo-temporal-ui.shinro.ai`** — n
 
 **Rejected:** a subdomain per session (`<id>.demo-temporal-ui.shinro.ai`) also avoids the prefix problem, but it needs wildcard DNS and puts the id back in the URL for no gain.
 
-**Ids don't disappear — they stop being public.** The session keeps an internal id for the namespace name, the Redis key and the worker image tag. It just never reaches a browser.
+**Ids don't disappear — they stop being public.** The session keeps an internal id for the namespace name and the Redis key. It just never reaches a browser.
 
 ### 4.7 How does nginx find a user's session?
 - **Resolved: ask shinro-api on every request**, keyed by the email from oauth2-proxy (2.7, step 4). The API looks up the user's lease in Redis and returns the NodePort address, or nothing if there is no live session.
@@ -1120,11 +1212,13 @@ Each user's Temporal session is served at **`demo-temporal-ui.shinro.ai`** — n
 ### 4.8 Which node IP does the API return?
 A NodePort answers on *any* node, but nodes come and go as the group scales. Don't freeze one node's IP at session creation. Have the API return a **currently healthy** node's address each time it's asked — which the lookup design in 4.7 makes easy, since it resolves on every request.
 
+**Exception — the terminal Service (DEPLOYMENT gap).** It uses `externalTrafficPolicy: Local`, so the pod sees the API's real source IP and the NetworkPolicy can match it. The side effect: **only the node running the pod answers** on that NodePort. For the terminal, the API must return **the pod's own node**, not any healthy one. The Temporal UI/gRPC Service can keep the default and follow the rule above.
+
 ### 4.9 Warm pool or not? (T-30 is undecided)
-A **warm pool** is a few empty sessions created in advance so nobody waits. **Recommendation: start without one.** Measure startup in the load test (T-36) and add one only if needed — code generation already takes about a minute, which hides most of the startup.
+A **warm pool** is a few empty sessions created in advance so nobody waits. **Recommendation: start without one.** Measure startup in the load test (T-36) and add one only if needed — code generation already takes about a minute, which hides most of the startup. *(Confirmed in 4.19.)*
 
 ### 4.10 Which build technology? (T-34 says "decide")
-**CodeBuild** (recommended: managed, isolated, IAM-scoped) or an **in-cluster Kaniko job** (builds images inside Kubernetes without Docker).
+**Moot** — no images are built per migration (4.18).
 
 ### 4.11 How is the shared Camunda kept read-only? (T-14 vs T-16) — **more urgent now**
 - **The problem:** T-14 says browser access is gated by oauth2-proxy, not Camunda. But oauth2-proxy only does **authentication** (1.6). Once a user is through, what does Operate think they may do?
@@ -1176,22 +1270,29 @@ Distinct from 4.2, which is about *our* users. This is about the token Camunda i
 - **Consequence for Stack 3:** the Cognito `camunda` resource server and `camunda-assessment` client are not built. The assessment tool uses a Keycloak client instead.
 - **Consequence for operations:** Keycloak's Postgres now holds state worth keeping, so it rides the same DLM snapshots as Elasticsearch (Stack 5).
 
-### 4.17 Egress for Go modules — **this contradicts T-32, resolve it**
+### 4.17 Egress for Go modules — **Resolved: (c), an in-VPC module proxy** (DEPLOYMENT decision 4)
 T-32 says the sandbox gets **egress only to its own Temporal**. The terminal needs **public HTTPS** to fetch Go modules. Both can't be true. Note that a *user* now has an interactive shell in that pod, so "allow all outbound HTTPS" means they can fetch — or send — anything.
 - **(a) Allow all outbound HTTPS.** Simplest, weakest, and every `go mod download` crosses the NAT at per-GB cost.
 - **(b) Allow only Go module hosts by name** (`proxy.golang.org`, `sum.golang.org`). Basic NetworkPolicy matches IPs and pod selectors, **not DNS names** — which is exactly why the design says **Calico**. This supersedes the earlier claim in 1.12 that the VPC CNI is sufficient: it is, until you need FQDN rules.
 - **(c) Run a module proxy inside the VPC** (Athens, or an S3-backed `GOPROXY`) and allow egress *only to it*. Tightest, fastest after the first warm-up, no NAT cost per build, and it keeps deny-by-default intact. **Recommended**, with (b) as the fallback.
 - Whichever you pick, pre-populate the module cache in the terminal image so a first `go build` isn't a cold download.
+- **Decision:** (c). Block all other outbound traffic from the sandbox. Because (c) needs only an IP rule, **Calico is not needed** and Stack 7 keeps `vpc-cni` (DEPLOYMENT gap). Where the proxy runs (a small EC2, or a Deployment in its own namespace) is still to be chosen — it must sit outside every session namespace.
 
-### 4.18 Where does generated code get built — CodeBuild or the sandbox?
+### 4.18 Where does generated code get built — CodeBuild or the sandbox? — **Resolved: the sandbox** (DEPLOYMENT decision 3)
 Two designs now describe the same job. **T-34 / Stack 8:** zip the generated project, build it in CodeBuild, push to ECR, start a worker pod. **The terminal design:** the user already has Go and a Temporal dev server in their own sandbox, so the code can be built and run right there.
 - They are not complementary; running both means maintaining two paths.
 - The sandbox route is simpler and much faster to iterate (no image push/pull per change), and the isolation argument behind T-34 — don't build untrusted code on the Shinro host — is satisfied either way, because the sandbox isn't the Shinro host.
 - CodeBuild still wins if you need a **reproducible artifact** per migration, or if the worker must outlive the terminal.
-- **Decide before build step 7.** If the sandbox route wins, **Stack 8 disappears** and with it a stack, an ECR repo, an IAM permission and a polling loop.
+- **Decision:** the sandbox. `migrate-agent` already builds and tests the code in the user's terminal container, so **Stack 8 is dropped** along with the `session-worker` ECR repo, `codebuild:StartBuild` and the polling loop. Accepted cost: no reproducible per-migration artifact, and the code lives only as long as the pod (4.22).
 
-### 4.19 Warm pool — reconsidered, and the answer may now flip
-4.9 said start without one. The terminal image carries the Go toolchain and the CLI, so it is **large** — likely 1–2 GB. A session created on demand makes the user wait for that pull. Options: pre-pull the image onto every node with a DaemonSet (cheap, keeps 4.9's answer), or keep a small warm pool after all. **Measure the pull time first** — it is the whole argument.
+### 4.19 Warm pool — reconsidered — **Resolved: no warm pool at launch** (DEPLOYMENT decision 7)
+4.9 said start without one. The terminal image carries the Go toolchain and the CLI; the estimate was 1–2 GB, but it measures **590 MB unpacked** on arm64. **Decision:** start without a warm pool. If the first session on a node is slow, **pre-pull the image with a DaemonSet** before reaching for a warm pool. Re-measure on amd64.
+
+### 4.21 How does the API trust oauth2-proxy? — **Resolved** (DEPLOYMENT decision 6)
+shinro-api today authenticates with its own `shinro_auth` cookie. Behind oauth2-proxy, it must instead **create the Shinro session from the identity headers nginx sets** (`X-Auth-Request-Email`), and **never accept those headers from anywhere but nginx**. nginx strips and re-sets them on every block (5.7). The API should also reject requests that reach it other than through nginx — bind it to the Compose network, not a host port.
+
+### 4.22 Is a user's generated code kept if their pod is replaced? — **Resolved: no, accept it for launch** (DEPLOYMENT decision 9)
+The code lives in `emptyDir` in the terminal pod. If the pod is replaced — a node is drained, or the image is changed under it — the code is gone. **Rule:** never restart running terminals to roll out a new image; point the template at the new tag so **new sessions only** pick it up, and let old ones end at their TTL. Persistence (a PVC per session) can come later if users complain.
 
 ---
 
@@ -1297,7 +1398,7 @@ Anyone can type a known customer's email on the right stream page and trigger a 
 - **Fix:** build the callback list from the stream's `subdomain` plus every entry in its `consoles` list, in code, so adding a hostname updates Cognito automatically.
 
 ### 5.24 Adding a stream touches more than CDK
-A new stream needs: the config entry, a deploy, an S3 folder with the stream's page, a HubSpot form (or a new value for the stream field), someone told to watch that queue, and a test that a user from another stream can't get in. Write it down as a checklist the first time you do it (build step 9), while it's fresh.
+A new stream needs: the config entry, a deploy, an S3 folder with the stream's page, a HubSpot form (or a new value for the stream field), someone told to watch that queue, **a second allowed `Origin` in the API** (`_origin_allowed` checks a single `FRONTEND_URL` today, which is enough for `temporal.shinro.ai` alone), and a test that a user from another stream can't get in. Write it down as a checklist the first time you do it (build step 9), while it's fresh.
 
 ### 5.25 A read-only root filesystem and an interactive shell don't mix
 - **Symptom:** the terminal opens, then everything fails — `go build` can't write, the CLI can't create `~/chats/<id>/`, even shell history errors.
@@ -1306,13 +1407,13 @@ A new stream needs: the config entry, a deploy, an S3 folder with the stream's p
 
 ### 5.26 The first session of the day is slow
 - **Symptom:** "Run in terminal" hangs for a minute on a node that hasn't run one before.
-- **Why:** a 1–2 GB image pull. Every new node repeats it.
+- **Why:** a large image pull (590 MB unpacked on arm64; re-measure on amd64). Every new node repeats it.
 - **Fix:** pre-pull via DaemonSet, or a warm pool (4.19). Either way, show progress in the UI — a silent minute reads as broken.
 
 ### 5.27 WebSocket timeouts will drop terminals
 - **Symptom:** an idle terminal disconnects after a few minutes; a long `go build` dies mid-output.
 - **Why:** there are three idle timeouts in the path — CloudFront, nginx `proxy_read_timeout`, and the API's own. The default nginx value is 60s.
-- **Fix:** raise `proxy_read_timeout`/`proxy_send_timeout` on this path as the old repo already does for the chat stream, and send WebSocket pings. tmux means a drop isn't fatal, but a reconnect that loses scrollback still feels broken.
+- **Fix:** raise `proxy_read_timeout`/`proxy_send_timeout` on `/v2/demo/terminal` as the old repo already does for the chat stream, and send WebSocket pings. **Test through CloudFront**, not only against nginx directly — CloudFront's idle timeout is separate. tmux means a drop isn't fatal, but a reconnect that loses scrollback still feels broken.
 
 ### 5.28 The sandbox disk fills quietly
 - **Symptom:** pods get evicted, or a node goes `DiskPressure` and takes *other users'* sessions with it.
@@ -1321,11 +1422,11 @@ A new stream needs: the config entry, a deploy, an S3 folder with the stream's p
 
 ### 5.29 Losing Redis now also loses token revocation
 - Redis holds the session leases **and** the live CLI tokens. If the Shinro host is replaced (gotcha 5.3), you lose the ability to revoke, and issued tokens keep working until they expire — up to 2 hours.
-- **Fix:** the same one as the lease problem — make the sandbox self-describing with namespace labels — plus keep the token TTL short, since the TTL becomes your only backstop.
+- **Fix:** keep Redis on a **persistent volume** so a container restart doesn't lose it (Stack 6). For a full host replacement, the same fix as the lease problem — make the sandbox self-describing with namespace labels — plus keep the token TTL short, since the TTL becomes your only backstop.
 
 ### 5.30 `singleProcessOOMKill` is a node setting, not a pod setting
 - It is a **kubelet** option under cgroup v2, configured in the node group's launch template or kubelet extra args. Putting it in the session manifest does nothing, silently.
-- **Why it matters:** without it, one runaway command in a terminal can OOM the whole container and take the user's Temporal server and worker with it.
+- **Why it matters:** without it, one runaway command in a terminal — such as a test run by `migrate-agent` — can OOM the whole container and take down the user's whole terminal.
 
 ### 5.31 The demo is authenticating as Camunda's admin client
 - **Symptom:** a "read-only" demo instance where the assessment tool can deploy, cancel and delete anything.
@@ -1378,7 +1479,7 @@ A new stream needs: the config entry, a deploy, an S3 folder with the stream's p
 | CloudFront Function | Small edge script rewriting requests | 1.11 |
 | CloudWatch / agent / Container Insights | Monitoring / host metrics / k8s metrics | 1.13 |
 | ClusterRole / RBAC | Kubernetes' own permissions | 1.12 |
-| CodeBuild | Managed isolated build machines | 1.13, Stack 8 |
+| CodeBuild | Managed isolated build machines — not used (4.18) | 1.13 |
 | Cognito user pool | User directory + identity provider. **One per stream** | 1.7 |
 | Container / Image / Compose | Running app / packaged app / multi-container file | 1.4 |
 | Control plane | The Kubernetes brain, run by AWS | 1.12 |
