@@ -20,7 +20,7 @@ Ordered by severity. "Status" says whether it's already known or planned.
 | F6 | Medium | **No WAF** on CloudFront; the two demo consoles are open to the internet on 443, protected only by oauth2-proxy (Cognito login) | Accepted for the demo; revisit before go-live |
 | F7 | Medium | Every container on the Shinro EC2 (nginx, oauth2-proxy, API, tool-exec, Redis) can obtain the **instance role** (IMDS hop limit 2, needed by the API). A compromised container can read the host's secrets | By design; could split roles later |
 | F8 | Medium | Camunda's **read-only `demo` account is shared by every prospect**; the final proof that a write gets 403 is **not yet run** (release blocker) | Pending approval |
-| F9 | Medium | Anyone with **push access to `camunda-demo-graph-deployment-main`** releases code to the live demo (by design of CI/CD). No branch protection confirmed | Needs a repo admin |
+| F9 | Medium | Anyone with **push access to `camunda-temporal-deployment-main`** releases code to the live demo (by design of CI/CD). No branch protection confirmed | Needs a repo admin |
 | F10 | Low | Secrets are **not rotated** and use the AWS-managed KMS key | Accepted (generated, single-purpose) |
 | F11 | Low | Redis has **no password** (reachable only on the host's Docker network, no published port) | Accepted |
 | F12 | Low | EKS control-plane and Container Insights **log groups never expire** | Should set retention |
@@ -136,7 +136,7 @@ All 12 IAM users in the account: `bedrock-user`, `BedrockAPIKey-8s02`, `BedrockA
 |---|---|---|
 | `shinro-live-shinro-host` | Shinro EC2 | SSM core, CloudWatch agent; read `/shinro/live/*` SSM; read named secrets (`shinro-live/camunda/shinro-assessment-client-secret`, `oauth2-proxy/*`, `edge/origin-secret`, `shinro/*`, `cloudflare/dns-api-token`); `cognito-idp:DescribeUserPoolClient` on the demo pool; `eks:DescribeCluster` on `shinro-live`; ECR pull on `shinro-live-*`; logs to `/shinro-live/shinro/*`. EKS: group `shinro:session-controller` only |
 | `shinro-live-camunda-host` | Camunda EC2 | SSM core, CloudWatch agent; read `/shinro/live/camunda/*`; read its 6 secrets; read the bundle from the CDK asset bucket; logs to `/shinro-live/camunda/*` |
-| `shinro-live-github-release` | GitHub OIDC, **only** `repo:Quest1Codes/shinro:ref:refs/heads/camunda-demo-graph-deployment-main`, `aud=sts.amazonaws.com`, 1 h sessions | ECR push/pull on the 4 repos; read/write `/shinro/live/release/*`; `ssm:SendCommand` of `AWS-RunShellScript` **only on instances tagged `shinro-live:role=shinro-host`**; `ec2:DescribeInstances`, command status. **No CloudFormation, no IAM, no secrets** |
+| `shinro-live-github-release` | GitHub OIDC, **only** `repo:Quest1Codes/shinro:ref:refs/heads/camunda-temporal-deployment-main`, `aud=sts.amazonaws.com`, 1 h sessions | ECR push/pull on the 4 repos; read/write `/shinro/live/release/*`; `ssm:SendCommand` of `AWS-RunShellScript` **only on instances tagged `shinro-live:role=shinro-host`**; `ec2:DescribeInstances`, command status. **No CloudFormation, no IAM, no secrets** |
 | `shinro-live-user-admin` | Principals in this account (via `sts:AssumeRole`) | 11 Cognito admin actions (create/disable/delete user, add/remove group, …) **on the demo pool only** |
 | `shinro-live-eks-cloudwatch-agent` | EKS Pod Identity (`amazon-cloudwatch/cloudwatch-agent`) | `CloudWatchAgentServerPolicy` |
 | EKS cluster role | `eks.amazonaws.com` | `AmazonEKSClusterPolicy` |
@@ -337,7 +337,7 @@ All encrypted with the AWS-managed key `aws/secretsmanager`; **no resource polic
 
 | Integration | Direction | Purpose | Trust / credential |
 |---|---|---|---|
-| **GitHub Actions** (`Quest1Codes/shinro`, branch `camunda-demo-graph-deployment-main`) | GitHub → AWS | Build, scan, push images; release to the Shinro EC2 | OIDC role `shinro-live-github-release` (no stored keys) |
+| **GitHub Actions** (`Quest1Codes/shinro`, branch `camunda-temporal-deployment-main`) | GitHub → AWS | Build, scan, push images; release to the Shinro EC2 | OIDC role `shinro-live-github-release` (no stored keys) |
 | **GitHub** (public repos) | AWS → GitHub | Camunda EC2 builds the OMS app from `karuna-quest1/oms-camunda-application@81c57e0`; Docker Compose and Buildx binaries (checksum-verified) | None (public) |
 | **Cloudflare** | Admin → Cloudflare; Shinro EC2 → Cloudflare API | DNS for `shinro.ai`; DNS-01 challenge for the consoles' certificate | API token (Zone:DNS:Edit, `shinro.ai` only), in Secrets Manager |
 | **Let's Encrypt** | Shinro EC2 → Let's Encrypt | Wildcard certificate `*.shinro.ai` for the consoles | ACME, no account email |

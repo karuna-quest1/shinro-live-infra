@@ -96,7 +96,7 @@ export const EKS = {
  */
 export const GITHUB_CI = {
   repo: 'Quest1Codes/shinro',
-  branch: 'camunda-demo-graph-deployment-main',
+  branch: 'camunda-temporal-deployment-main',
   /** Already in the account; one provider per issuer, so it is imported, never created. */
   oidcProviderArn: 'arn:aws:iam::425106880357:oidc-provider/token.actions.githubusercontent.com',
 } as const;

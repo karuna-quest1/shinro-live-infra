@@ -135,7 +135,7 @@ Not built: a Cognito `camunda` resource server or `camunda-assessment` client. C
 **Check:** a test user (on a verified address while SES is still in sandbox) gets an OTP email and signs in on the Managed Login page.
 
 ### Step 3a: RegistryStack (T-31)
-**Status:** deployed 2026-11-10 as `ShinroLiveRegistry`. **CI/CD parked 2026-11-10** (no permission yet to set the GitHub Actions variable). CI role `shinro-live-github-release` added in code (not yet deployed): only pushes to `Quest1Codes/shinro@camunda-demo-graph-deployment-main` can assume it. Pipeline: `.github/workflows/live-release-main.yml` in the app repo.
+**Status:** deployed 2026-11-10 as `ShinroLiveRegistry`. **CI/CD parked 2026-11-10** (no permission yet to set the GitHub Actions variable). CI role `shinro-live-github-release` added in code (not yet deployed): only pushes to `Quest1Codes/shinro@camunda-temporal-deployment-main` can assume it. Pipeline: `.github/workflows/live-release-main.yml` in the app repo.
 
 **Depends on:** 0
 

@@ -1,6 +1,6 @@
 # App changes needed for Shinro live
 
-For the backend team, `Quest1Codes/shinro`, branch `camunda-demo-graph-deployment-main`.
+For the backend team, `Quest1Codes/shinro`, branch `camunda-temporal-deployment-main`.
 The infrastructure is built and running (see [TODO.md](TODO.md) for status). These are the changes on the app side that it needs. Last updated 2026-11-11.
 
 Items 1–3 block demo sessions on EKS; the EKS cluster is deployed once they're in.

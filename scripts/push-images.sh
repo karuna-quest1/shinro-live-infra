@@ -9,7 +9,7 @@
 # untracked files in the app repo never end up in an image.
 set -euo pipefail
 
-BRANCH=${1:-camunda-demo-graph-deployment-main}
+BRANCH=${1:-camunda-temporal-deployment-main}
 APP_REPO=${2:-$HOME/shinro}
 REGION=us-east-1
 ACCOUNT=425106880357

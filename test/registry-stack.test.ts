@@ -37,7 +37,7 @@ describe('GitHub release role', () => {
     expect(statement.Condition).toEqual({
       StringEquals: {
         'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com',
-        'token.actions.githubusercontent.com:sub': 'repo:Quest1Codes/shinro:ref:refs/heads/camunda-demo-graph-deployment-main',
+        'token.actions.githubusercontent.com:sub': 'repo:Quest1Codes/shinro:ref:refs/heads/camunda-temporal-deployment-main',
       },
     });
   });

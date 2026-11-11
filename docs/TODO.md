@@ -90,10 +90,10 @@ Before go-live:
 
 - [ ] A GitHub admin of `Quest1Codes/shinro` sets the Actions **variable** `AWS_LIVE_RELEASE_ROLE_ARN` = `arn:aws:iam::425106880357:role/shinro-live-github-release`.
 - [ ] Deploy `ShinroLiveRegistry` (adds that role).
-- [ ] Commit and push `.github/workflows/live-release-main.yml` in `~/shinro` (already written, uncommitted) to `camunda-demo-graph-deployment-main`.
+- [ ] Commit and push `.github/workflows/live-release-main.yml` in `~/shinro` (already written, uncommitted) to `camunda-temporal-deployment-main`.
 - [ ] Confirm GitHub-hosted runners work (the old pipeline hit a billing block).
 - [ ] Until then: `AWS_PROFILE=cdk-dev scripts/push-images.sh` builds and pushes by hand.
-- [ ] **UI in the pipeline (2026-11-11):** written. The `ui` job builds `apps/ui` only when its git tree changed since the last UI release (`/shinro/live/release/ui-tree`); the release uploads assets, rolls the API, then switches `index.html`. Deploy `ShinroLiveRegistry` (UI bucket write for the GitHub role), then push `c190f849` on `camunda-demo-graph-deployment-main`.
+- [ ] **UI in the pipeline (2026-11-11):** written. The `ui` job builds `apps/ui` only when its git tree changed since the last UI release (`/shinro/live/release/ui-tree`); the release uploads assets, rolls the API, then switches `index.html`. Deploy `ShinroLiveRegistry` (UI bucket write for the GitHub role), then push `c190f849` on `camunda-temporal-deployment-main`.
 
 ## 6. Claude
 
