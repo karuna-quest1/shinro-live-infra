@@ -14,10 +14,10 @@ The user flow has been redesigned. Five changes, and they ripple through everyth
 |---|---|---|
 | 1 | **The product is split into "streams."** Each stream is a migration path with its own subdomain, e.g. `temporal.shinro.ai` for Camunda → Temporal | Nearly everything is now "one per stream" instead of "one" |
 | 2 | **One new Cognito demo pool with a group per stream.** Membership decides which demos a person can open, and a user may be in several | We **create** a demo pool rather than reusing the main one, and run **one oauth2-proxy per stream**, each gating on its own group (4.2) |
-| 3 | **Access is requested through a HubSpot form** on the stream page, then granted by hand | The form must record *which stream* was asked for. That field decides which pool the email goes into |
+| 3 | **Access is requested through a HubSpot form** on the stream page, then granted by hand | The form must record *which stream* was asked for. That field decides which group the email goes into |
 | 4 | **After login the user lands in the chat app** at `temporal.shinro.ai/chat/<convid>` | Each stream subdomain serves *both* a public marketing page and a logged-in app, so CloudFront needs path-based routing |
 | 6 | **The Shinro CLI now runs inside the browser**, in a terminal panel on the chat page, backed by a shell in the user's own sandbox | The session pod grows a **terminal container**, shinro-api becomes a **WebSocket relay**, and the sandbox needs **outbound HTTPS for Go modules** — which collides with the deny-by-default egress policy in T-32 (decision 4.17) |
-| 5 | **`reference.shinro.ai` is dropped for now** (T-35 deferred). Demo Camunda stays shared at `demo-camunda-instance.shinro.ai`. Each user's Temporal session is served at **one plain hostname, `demo-temporal-ui.shinro.ai`, with no id in the URL** | nginx picks the session from *who is logged in*. This kills the path-prefix problem and the shareable-link problem at once, and matches what T-18 originally described (decision 4.6) |
+| 5 | **`reference.shinro.ai` is dropped for now** (T-35 deferred). Demo Camunda stays shared at `camunda-demo.shinro.ai`. Each user's Temporal session is served at **one plain hostname, `demo-temporal-ui.shinro.ai`, with no id in the URL** | nginx picks the session from *who is logged in*. This kills the path-prefix problem and the shareable-link problem at once, and matches what T-18 originally described (decision 4.6) |
 
 Two of these contradict things written earlier, and both are called out where they appear: change 2 contradicts **T-13** ("reuse the existing pool, do not create a new one"), and change 5 defers **T-35**.
 
@@ -56,12 +56,12 @@ Picture a **conference centre that hosts several separate trade shows at once**.
 - **The main entrance hall** is `shinro.ai`, the company's marketing page. Anyone can walk in.
 - **Each trade show has its own front desk and hall**: `temporal.shinro.ai`, and one subdomain per other stream. Anyone can look at the hall's public brochure page. On that page are two buttons: **"Request a demo"** and **"Sign in."**
 - **"Request a demo"** opens a **HubSpot form** (HubSpot is our sales CRM). The visitor leaves their email. The form records which trade show they asked about.
-- **Someone on our team reads that request and issues a badge** — by hand — valid for **that trade show only**. Technically: they add the email to that stream's **Cognito user pool**.
-- **"Sign in"** sends the visitor to the badge office (**Cognito**) for *that* stream. There's no password: they type their email, get a 6-digit code by email, type it in, and they're through. They land inside the app at `temporal.shinro.ai/chat/<convid>`.
-- **Each trade show has its own security guard** checking badges at every door into that show: one **oauth2-proxy** per stream. A Temporal badge means nothing at another show's door, because each guard only recognises badges from their own badge office.
+- **Someone on our team reads that request and issues a badge** — by hand — valid for **that trade show only**. Technically: they add the email to the **Cognito demo pool** and put it in that stream's **group**.
+- **"Sign in"** sends the visitor to the badge office (**Cognito**) — one office for every show. There's no password: they type their email, get a 6-digit code by email, type it in, and they're through. They land inside the app at `temporal.shinro.ai/chat/<convid>`.
+- **Each trade show has its own security guard** checking badges at every door into that show: one **oauth2-proxy** per stream. Every badge comes from the same office, but each guard only lets in badges stamped with their own show (the stream's **group**).
 - **The receptionist who walks every visitor to the right room** is **nginx**, running on the **Shinro EC2** server. It is the single front door into the private part of the building.
 - **Two demo rooms belong to the Temporal show:**
-  - **`demo-camunda-instance.shinro.ai`** — one **shared** Camunda instance that every Temporal-stream visitor looks at. It lives on its own private server with no public address.
+  - **`camunda-demo.shinro.ai`** — one **shared** Camunda instance that every Temporal-stream visitor looks at. It lives on its own private server with no public address.
   - **`demo-temporal-ui.shinro.ai`** — one address, with **a different room behind it for every visitor**. The receptionist reads your badge and walks you to *your* room; there is no room number to type, and none to share. Each room holds that visitor's own Temporal server **and a live terminal** they can type into from the chat page; the code our tool generates for them is built, tested and run inside that terminal. Rooms are demolished after **2 days**.
 - **The private rooms are built inside EKS**, a Kubernetes cluster. Kubernetes is the building manager that finds space, sets rooms up and keeps them running.
 - **The brochure stands** are **CloudFront + S3**: the public pages for the main site and every stream, cached worldwide.
@@ -72,7 +72,7 @@ Keep this picture. Every section below fills in one part of it.
 
 ## 0.2 The hostname map
 
-This table is the backbone of the whole design. **Every hostname belongs to exactly one stream**, and that rule is what makes per-stream pools work (decision 4.1).
+This table is the backbone of the whole design. **Every hostname belongs to exactly one stream**, and that rule is what makes per-stream login work (decision 4.1).
 
 | Hostname | Stream | Public or logged-in | Served by | Notes |
 |---|---|---|---|---|
@@ -82,7 +82,7 @@ This table is the backbone of the whole design. **Every hostname belongs to exac
 | `temporal.shinro.ai/assets/*`, `/login`, `/settings` | temporal | Mixed | CloudFront → nginx (static UI files) | The UI's own files and routes (DEPLOYMENT decision 1) |
 | `temporal.shinro.ai/v2/*` | temporal | **Logged in** | CloudFront → nginx → shinro-api | API and WebSocket |
 | `temporal.shinro.ai/oauth2/*` | temporal | Login machinery | CloudFront → nginx → oauth2-proxy-temporal | Start + callback |
-| `demo-camunda-instance.shinro.ai` | temporal | **Logged in** | A record → nginx → Camunda private IP | Shared demo Camunda |
+| `camunda-demo.shinro.ai` | temporal | **Logged in** | A record → nginx → Camunda private IP | Shared demo Camunda |
 | `demo-temporal-ui.shinro.ai` | temporal | **Logged in** | A record → nginx → *your* session's NodePort | One URL for everyone; the logged-in email picks the session |
 | `<other>.shinro.ai` | other streams | Mixed | Same pattern, repeated | Added later |
 | ~~`reference.shinro.ai`~~ | — | — | — | **Dropped for now** (T-35 deferred) |
@@ -135,10 +135,10 @@ Each concept follows the same pattern: **in one sentence** → **analogy** → *
   - **CNAME**: name → another name.
   - **Wildcard** `*.shinro.ai`: matches any subdomain that has no record of its own.
 - **Key rule: a specific record always beats a wildcard.**
-- **In our system:** `shinro.ai` and `*.shinro.ai` point at CloudFront (so every stream page is covered automatically). `demo-camunda-instance` and `demo-temporal-ui` have **their own A records** to the Shinro EIP, which override the wildcard.
+- **In our system:** `shinro.ai` and `*.shinro.ai` point at CloudFront (so every stream page is covered automatically). `camunda-demo` and `demo-temporal-ui` have **their own A records** to the Shinro EIP, which override the wildcard.
 
 ### Subdomain
-`shinro.ai` is the **domain**. `temporal.shinro.ai` and `demo-camunda-instance.shinro.ai` are **subdomains**. We use **one subdomain per stream**, plus one per shared demo console.
+`shinro.ai` is the **domain**. `temporal.shinro.ai` and `camunda-demo.shinro.ai` are **subdomains**. We use **one subdomain per stream**, plus one per shared demo console.
 
 ### HTTP, HTTPS, status codes, headers, cookies
 - **HTTP** is the language browsers and servers speak: "GET me this page", "POST this form".
@@ -244,7 +244,7 @@ A very fast in-memory key-value store. In the diagram it holds Shinro's **state*
 - **Policy**: a JSON document listing allowed actions, e.g. "`secretsmanager:GetSecretValue` on secret X".
 - **Role**: an identity *without a password* that something "puts on" to gain permissions. Servers, Lambdas, pipelines and people can all assume roles.
 - **Instance profile / instance role**: the role an EC2 wears. Code on it gets temporary credentials automatically, so **no AWS keys are ever stored on the server**.
-- **Least privilege**: give each role only what it needs. Example: our `shinro-live-user-admin` role can only manage users, and only in the demo pools.
+- **Least privilege**: give each role only what it needs. Example: our `shinro-live-user-admin` role can only manage users, and only in the demo pool.
 
 ## 1.6 Logging in: authentication, OAuth 2.0, OIDC, tokens
 
@@ -253,8 +253,8 @@ A very fast in-memory key-value store. In the diagram it holds Shinro's **state*
 - **Authorization (authz)**: *what may you do?*
 - **Analogy:** showing your passport is authentication; your boarding pass deciding which plane you board is authorization.
 - **Why it matters here, twice over:**
-  1. **oauth2-proxy only does authentication.** It answers "is this a logged-in user of *this stream's* pool?" It does **not** know that "start a Camunda workflow" is forbidden (decision 4.11) or that session `<id>` belongs to a different user (gotcha 5.20).
-  2. Our **stream separation** is authentication-based: a Temporal-pool user simply doesn't exist in another stream's pool, so they can't even get a code. That's a strong boundary, and it's why per-stream pools were worth the extra machinery.
+  1. **oauth2-proxy only does authentication.** It answers "is this a logged-in user of the demo pool, in *this stream's* group?" It does **not** know that "start a Camunda workflow" is forbidden (decision 4.11) or that session `<id>` belongs to a different user (gotcha 5.20).
+  2. Our **stream separation** is group-based: everyone is in one pool, and each stream's oauth2-proxy admits only its own group (`--allowed-group`). A user outside the group gets a code and signs in to Cognito, then gets a 403. Weaker than separate pools, but low-consequence (decision 4.2).
 
 ### OAuth 2.0
 - **In one sentence:** a standard for an app to obtain a **token** from a trusted **authorization server**, so it never handles the user's password itself.
@@ -277,8 +277,8 @@ A very fast in-memory key-value store. In the diagram it holds Shinro's **state*
 | **ID token** | Token describing the user | A name badge | oauth2-proxy reads the email from it |
 | **Refresh token** | Long-lived token for getting new ones without logging in again | A voucher for a replacement card | Revoked on global sign-out |
 | **JWT (JSON Web Token)** | The token format: `header.payload.signature`. Anyone can *read* it; only the IdP can *sign* it | A laminated badge with a hologram — readable by all, forgeable by none | Camunda verifies Cognito JWTs (T-14) |
-| **JWKS** | A public URL where the IdP publishes the keys for checking signatures | A poster showing what the real hologram looks like | Camunda fetches the temporal pool's JWKS |
-| **Issuer (`iss`)** | The URL identifying an IdP. **One pool = one issuer**: `https://cognito-idp.<region>.amazonaws.com/<poolId>` | The hotel's name printed on every card | **N pools = N issuers = N oauth2-proxies** (1.9) |
+| **JWKS** | A public URL where the IdP publishes the keys for checking signatures | A poster showing what the real hologram looks like | Camunda fetches **Keycloak's** JWKS, not Cognito's (4.20); oauth2-proxy uses the demo pool's |
+| **Issuer (`iss`)** | The URL identifying an IdP. **One pool = one issuer**: `https://cognito-idp.<region>.amazonaws.com/<poolId>` | The hotel's name printed on every card | One demo pool = **one issuer**, shared by every stream's oauth2-proxy (1.9) |
 | **Claim** | A field inside a token (`email`, `cognito:groups`) | A line on the badge | We read `email`; groups are optional now |
 
 ### The two OAuth flows we use
@@ -289,7 +289,7 @@ A **flow** (or "grant") is a recipe for *how* a token is obtained.
 
 ```
 1. Browser ──► temporal.shinro.ai/chat/            (no cookie yet)
-2.         ◄── 302 redirect to the temporal pool's Cognito login page
+2.         ◄── 302 redirect to the demo pool's Cognito login page
 3. Browser ──► Cognito: user types email → receives a code by email → types the code
 4.         ◄── 302 back to https://temporal.shinro.ai/oauth2/callback?code=abc123
 5. oauth2-proxy-temporal (on our server, never in the browser)
@@ -317,7 +317,7 @@ No human, no browser. **Cognito only permits this flow with a custom scope from 
 ### The parts
 - **User pool**: the user directory *and* the IdP. **One pool = one issuer.**
 - **App client**: one registration per app using the pool. Key settings: which **flows** (code vs client credentials), which **scopes**, which **callback and logout URLs**, which **auth flows** (`ALLOW_USER_AUTH` for passwordless), and whether it has a **secret**.
-- **Domain**: where the login page and token endpoint live, e.g. `https://shinro-temporal.auth.us-east-1.amazoncognito.com`. **One per pool**, and the prefix must be globally unique.
+- **Domain**: where the login page and token endpoint live, e.g. `https://shinro-live-demo-<account>.auth.us-east-1.amazoncognito.com`. **One per pool — so one in total**, and the prefix must be globally unique.
 - **Groups**: labels on users, surfacing in the ID token as `cognito:groups`.
 - **Callback URLs cannot contain wildcards.** You can't register `https://*.shinro.ai/oauth2/callback`. Each one is listed explicitly. Limit: 100 per app client.
 
@@ -361,13 +361,13 @@ The passwordless row decides it: that setup is the most error-prone part of the 
 
 **What the user experiences:**
 1. They click **Sign in** on `temporal.shinro.ai`.
-2. The Cognito login page for the temporal pool appears. They type their email.
+2. The demo pool's Cognito login page appears. They type their email.
 3. A 6-digit code (an **OTP**, one-time password) arrives by email.
 4. They type it. They're in, landing at `/chat/<convid>`. No password anywhere.
 
 **How it works underneath:** Cognito supports **choice-based authentication**, technically the **`USER_AUTH` flow**. It lets a pool accept sign-in methods ("first factors") other than a password: **email OTP**, SMS OTP, or **passkeys**. We enable email OTP. The code is single-use and expires in minutes. Being able to read it proves you control that inbox, and that *is* the authentication.
 
-**Six things must all be true per pool, or login breaks:**
+**Six things must all be true, or login breaks** (set once, on the one demo pool):
 
 | # | Requirement | Plain explanation | Where |
 |---|---|---|---|
@@ -380,7 +380,7 @@ The passwordless row decides it: that setup is the most error-prone part of the 
 
 **SES words explained:**
 - **SES (Simple Email Service)**: AWS's email-sending service.
-- **Verified domain**: proving to SES you own `shinro.ai` so you may send as `no-reply@shinro.ai`. **One domain identity serves all pools** — you don't repeat this per stream.
+- **Verified domain**: proving to SES you own `shinro.ai` so you may send as `no-reply@shinro.ai`. **One domain identity serves the pool** — nothing is repeated per stream.
 - **DKIM**: a cryptographic signature on outgoing mail, published as DNS records, that receiving servers check. Without it, codes land in spam.
 - **SPF / DMARC**: two more DNS records saying which servers may send for your domain and what to do on failure. With DKIM they decide inbox vs spam.
 - **SES sandbox**: a new SES account can only send to addresses you've verified yourself. You request **production access** (a support ticket, usually about a day) to send to anyone.
@@ -389,7 +389,7 @@ The passwordless row decides it: that setup is the most error-prone part of the 
 
 ## 1.8 Getting users in: the request-and-grant loop
 
-**HubSpot** is our sales CRM — where sales keeps contacts. There is **no self-service sign-up**. A customer can log in only because someone on our team put their email in the right pool.
+**HubSpot** is our sales CRM — where sales keeps contacts. There is **no self-service sign-up**. A customer can log in only because someone on our team put their email in the demo pool and the right stream's group.
 
 ```
  Visitor on temporal.shinro.ai
@@ -401,21 +401,21 @@ The passwordless row decides it: that setup is the most error-prone part of the 
  A team member reads the request (HubSpot list / notification)
    │  picks the pool that matches the STREAM field
    ▼
- Runs the runbook below  ──►  Cognito pool for that stream
+ Runs the runbook below  ──►  demo pool + that stream's group
    │
    ▼
  Replies to the visitor: "You're set up — click Sign in and use this email address"
 ```
 
-**The stream field is the single most important part of the form.** It is the only thing telling the admin which pool to use, and putting someone in the wrong pool gives them access to the wrong demo (gotcha 5.18).
+**The stream field is the single most important part of the form.** It is the only thing telling the admin which group to use, and putting someone in the wrong group gives them access to the wrong demo (gotcha 5.18).
 
 ### Runbook: adding a user
 
 A **runbook** is a written step-by-step procedure. The **AWS CLI** (the `aws` command) beats clicking in the console because it's repeatable and you can't silently skip a step.
 
 ```bash
-# Pick the pool for the stream named on the request. This is the step to get right.
-POOL=<the stream's user pool id>          # e.g. the temporal pool
+POOL=<the demo pool id>                   # shinro-live-demo, the same for every stream
+STREAM=<stream from the request>          # e.g. temporal. This is the step to get right.
 EMAIL=$(echo "Jane.Doe@Acme.com " | tr 'A-Z' 'a-z' | xargs)   # lower-case and trim
 
 # 1. Create the user: no password, email already verified, no Cognito welcome email.
@@ -444,7 +444,7 @@ Then reply to the customer: *"You're all set. Go to https://temporal.shinro.ai, 
 
 | Piece | What happens without it |
 |---|---|
-| The right pool | They log in to the wrong stream, or can't log in at all |
+| The right group | They get a 403 on the stream they asked for, or see one they didn't |
 | `email_verified=true` | Cognito never sends a code. The user "can't log in" |
 | `--message-action SUPPRESS` | Cognito sends "Your temporary password is…", confusing a passwordless user |
 | Lower-case + trim | Emails pasted from HubSpot can carry capitals or trailing spaces, creating a duplicate user or a login that doesn't match |
@@ -456,9 +456,9 @@ Then reply to the customer: *"You're all set. Go to https://temporal.shinro.ai, 
 4. `admin-delete-user` only once you're sure.
 
 ### Who may do it
-CDK creates an IAM role **`shinro-live-user-admin`** allowing only `AdminCreateUser`, `AdminSetUserPassword`, `AdminDisableUser`, `AdminEnableUser`, `AdminUserGlobalSignOut`, `AdminGetUser` and `ListUsers`, and only on **the demo pools** (not the main Shinro pool). The people onboarding customers assume this role.
+CDK creates an IAM role **`shinro-live-user-admin`** allowing only `AdminCreateUser`, `AdminAddUserToGroup`, `AdminRemoveUserFromGroup`, `AdminListGroupsForUser`, `AdminSetUserPassword`, `AdminDisableUser`, `AdminEnableUser`, `AdminUserGlobalSignOut`, `AdminDeleteUser`, `AdminGetUser` and `ListUsers`, and only on **the demo pool** (not the main Shinro pool). The people onboarding customers assume this role.
 
-**Optional helper:** `scripts/add-demo-user.sh <stream> <email>`, which maps the stream name to the right pool id and runs the steps. It should be **idempotent** — running it twice does no harm. Also keep a record (a HubSpot note) of who was added to which stream and when, because nothing else records it.
+**Optional helper:** `scripts/add-demo-user.sh <stream> <email>`, which checks the stream name against the configured list, adds the user to the demo pool and that stream's group, and runs the steps. It should be **idempotent** — running it twice does no harm. Also keep a record (a HubSpot note) of who was added to which stream and when, because nothing else records it.
 
 ## 1.9 oauth2-proxy
 
@@ -470,12 +470,12 @@ CDK creates an IAM role **`shinro-live-user-admin`** allowing only `AdminCreateU
 **A single oauth2-proxy has one `--allowed-group`, set per instance rather than per route.** So we run **one oauth2-proxy container per stream**, all pointing at the *same* demo pool but each gating on its own group, with its own client id, client secret and — critically — its own **cookie name**.
 
 ```
-nginx server block                      asks                    which pool
-──────────────────────────────────────  ──────────────────────  ─────────────
-temporal.shinro.ai/*                 →  oauth2-proxy-temporal → shinro-demo-temporal
-demo-camunda-instance.shinro.ai/*    →  oauth2-proxy-temporal → shinro-demo-temporal
-demo-temporal-ui.shinro.ai/*         →  oauth2-proxy-temporal → shinro-demo-temporal
-<next>.shinro.ai/*                   →  oauth2-proxy-<next>   → shinro-demo-<next>
+nginx server block                      asks                    pool → group
+──────────────────────────────────────  ──────────────────────  ──────────────────────────
+temporal.shinro.ai/*                 →  oauth2-proxy-temporal → shinro-live-demo → temporal
+camunda-demo.shinro.ai/*    →  oauth2-proxy-temporal → shinro-live-demo → temporal
+demo-temporal-ui.shinro.ai/*         →  oauth2-proxy-temporal → shinro-live-demo → temporal
+<next>.shinro.ai/*                   →  oauth2-proxy-<next>   → shinro-live-demo → <next>
 ```
 
 Notice the two demo consoles are wired to the **temporal** proxy. That's the hostname-to-stream rule from 0.2 doing its job: those consoles are part of the Temporal demo, so the Temporal guard checks them. If another stream later needs its own Camunda, it gets its own hostname and its own guard (decision 4.3).
@@ -486,7 +486,7 @@ Notice the two demo consoles are wired to the **temporal** proxy. That's the hos
                ┌───────────────── nginx ──────────────────┐
   request ───► │ 1. auth_request /oauth2/auth              │ ──► oauth2-proxy-<stream>
                │      202 → continue                       │ ◄── 202 + X-Auth-Request-Email
-               │      401 → redirect to /oauth2/start      │ ◄── 401  (→ that pool's login page)
+               │      401 → redirect to /oauth2/start      │ ◄── 401  (→ the demo pool's login)
                │ 2. proxy_pass to the real destination     │ ──► app / Camunda / session pod
                └───────────────────────────────────────────┘
 ```
@@ -502,7 +502,7 @@ Notice the two demo consoles are wired to the **temporal** proxy. That's the hos
 | `--provider=oidc` | Speak OIDC (works with Cognito) |
 | `--oidc-issuer-url=<the demo pool issuer>` | Which IdP to trust. The **same** for every stream's proxy — there is one pool |
 | `--allowed-group=<stream>` + `--oidc-groups-claim=cognito:groups` | **The per-stream gate**, and the reason there is still one proxy per stream |
-| `--client-id`, `--client-secret` | This proxy's registration in that pool |
+| `--client-id`, `--client-secret` | This proxy's own app client in the demo pool |
 | `--cookie-name=_shinro_<stream>` | **Must differ per stream** — see gotcha 5.19 |
 | `--cookie-secret` | A random 32-byte key encrypting the cookie. One per stream, in Secrets Manager |
 | `--cookie-domain=.shinro.ai` | Send the cookie to all `*.shinro.ai` hosts, so one login covers the stream page *and* its demo consoles |
@@ -525,7 +525,7 @@ One IP serves many hostnames. nginx reads the **`Host` header** (and the TLS **S
 
 ```nginx
 server { listen 80;        server_name _;                                 }  # CloudFront → app paths
-server { listen 443 ssl;   server_name demo-camunda-instance.shinro.ai;   }  # → Camunda private IP
+server { listen 443 ssl;   server_name camunda-demo.shinro.ai;   }  # → Camunda private IP
 server { listen 443 ssl;   server_name demo-temporal-ui.shinro.ai;        }  # → the logged-in user's pod
 ```
 
@@ -565,7 +565,7 @@ Conceptually nginx answers two questions in order:
 - **Origin**: where CloudFront fetches what it hasn't cached. We have two: the **S3 bucket** and the **Shinro EC2**.
 - **Behaviour**: a rule saying "requests matching this *path pattern* go to that origin with these cache settings."
 
-> **The limitation that shapes our design: CloudFront behaviours match on *path*, not on *host*.** You cannot write "requests for `demo-camunda-instance.shinro.ai` go to the EC2." That's precisely why the two demo consoles get their own A records straight to the EC2 instead of riding on the wildcard distribution (decision 4.4). Their root path `/` would otherwise fall into the default behaviour and be served from S3.
+> **The limitation that shapes our design: CloudFront behaviours match on *path*, not on *host*.** You cannot write "requests for `camunda-demo.shinro.ai` go to the EC2." That's precisely why the two demo consoles get their own A records straight to the EC2 instead of riding on the wildcard distribution (decision 4.4). Their root path `/` would otherwise fall into the default behaviour and be served from S3.
 
 **Our behaviours, in order:**
 
@@ -644,7 +644,7 @@ The local reference stack is `~/Playground/camunda-full`, **Camunda 8.8.32**, an
 | Service | In one sentence | In our system |
 |---|---|---|
 | **Secrets Manager** | A safe for secrets, guarded by IAM | Per-stream client secrets and cookie secrets, LLM API keys |
-| **SSM Parameter Store** | A key-value store for *non-secret* config, by name | `/shinro/live/camunda-private-ip`, pool ids, issuer URLs |
+| **SSM Parameter Store** | A key-value store for *non-secret* config, by name | `/shinro/live/camunda-private-ip`, the pool id, the issuer URL |
 | **SSM Session Manager** | A shell on an EC2 through AWS, **no SSH, no open port 22** | How we log into both servers |
 | **SSM Run Command** | Run a command on servers through AWS | Re-sync the config bundle without replacing the server |
 | **CloudWatch** | Logs, metrics, alarms, dashboards | Container logs, disk/memory alarms, cost alarm |
@@ -734,7 +734,7 @@ The Shinro CLI is a desktop program. This brings it to the chat page: the user c
 1. The button is a link to **`https://temporal.shinro.ai/oauth2/start?rd=/chat`**. That's oauth2-proxy's own endpoint, which means the "Sign in" button needs no custom code.
 2. **DNS → CloudFront.** The path `/oauth2/*` matches a behaviour pointing at the **Shinro EC2**, with caching disabled and all cookies and query strings forwarded.
 3. **nginx** (port 80, origin-secret checked) routes `/oauth2/*` to **oauth2-proxy-temporal**.
-4. oauth2-proxy redirects the browser to the **temporal pool's Cognito Managed Login** page.
+4. oauth2-proxy redirects the browser to the **demo pool's Cognito Managed Login** page.
 5. The visitor types their email. **SES** sends a 6-digit code. They type it in.
    - If their email isn't in the demo pool at all, **no code is ever sent**.
    - If it is in the pool but **not in this stream's group**, they get a code, sign in to Cognito successfully, and then oauth2-proxy returns **403** — a visible, diagnosable failure rather than silence (5.18).
@@ -753,12 +753,13 @@ The Shinro CLI is a desktop program. This brings it to the chat page: the user c
 
 ## 2.5 The user opens the shared demo Camunda
 
-1. The app links to **`https://demo-camunda-instance.shinro.ai`**.
+1. The app links to **`https://camunda-demo.shinro.ai`**.
 2. **DNS:** this host has **its own A record** → the Shinro EIP, so it bypasses CloudFront entirely.
 3. **TLS** is terminated by nginx on 443, using the certificate on disk (decision 4.5).
 4. nginx runs `auth_request` against **oauth2-proxy-temporal** — the same guard as the stream page, because this hostname belongs to the temporal stream.
-   - The user already has the `_shinro_temporal` cookie for `.shinro.ai`, so this is invisible: **no second login.**
-5. nginx proxies to `http://<camunda-private-ip>:8080` — in 8.8 one port serves Operate (`/operate`), Tasklist (`/tasklist`), the REST API (`/v2/...`) and the login callback (`/sso-callback`). The **Camunda SG** permits it only from the **Shinro SG** (T-10, T-12).
+   - The user already has the `_shinro_temporal` cookie for `.shinro.ai`, so this is invisible: **no second Cognito login.**
+5. nginx proxies to `http://<camunda-private-ip>:8080` — in 8.8 one port serves Operate (`/operate`), Tasklist (`/tasklist`), the REST API (`/v2/...`) and the login callback (`/sso-callback`). The **Camunda SG** permits it only from the **Shinro SG** (T-10, T-12). Paths under `/auth/*` go to Keycloak on **18080** — the browser's half of Camunda's own login — and `/` redirects to `/operate`.
+   - Camunda then asks for **its own Keycloak login**: the shared, read-only `demo`/`demo` account, printed beside the link in chat (decision 4.20). This second login is accepted.
 6. Elasticsearch (9200) and Zeebe's internal ports are never reachable from outside (T-12).
 7. The instance is **shared**: every temporal-stream user sees the same Camunda. Which is why it must be effectively read-only (decision 4.11) — one user must not be able to change what the next user sees.
 
@@ -833,7 +834,7 @@ bin/shinro-live-infra.ts          # The App: creates stacks in order; region pin
 lib/stacks/
   network-stack.ts                # VPC, subnets, NAT, security groups, CloudFront prefix-list lookup
   edge-stack.ts                   # Route 53, ACM cert, S3 sites, CloudFront + Function + behaviours
-  identity-stack.ts               # ONE COGNITO POOL PER STREAM + SES domain + user-admin IAM role
+  identity-stack.ts               # ONE demo pool + a group/client per stream + SES domain + user-admin IAM role
   shinro-host-stack.ts            # Shinro EC2 (nginx, N × oauth2-proxy, api, redis, tool-exec)
   camunda-host-stack.ts           # Camunda EC2 (private), DLM backups, alarms
   eks-stack.ts                    # EKS cluster, node group, add-ons, access entries
@@ -841,7 +842,7 @@ lib/stacks/
   observability-stack.ts          # Log groups, dashboards, cost + capacity alarms
   # (no build-stack.ts: CodeBuild dropped, decision 4.18)
 lib/constructs/
-  stream-identity.ts              # NEW: everything one stream needs in Cognito. Instantiated per stream
+  stream-identity.ts              # NEW: one stream's group, app client and secrets. Instantiated per stream
   ...                             # Others copied and adapted from shinro-demo-infra
 assets/shinro-bundle/             # docker-compose.yml, nginx.conf.template,
                                   #   oauth2-proxy config template (rendered once per stream), render-env.sh
@@ -863,7 +864,7 @@ Everything per-stream is driven by one list in `cdk.json`, so adding a stream is
     "name": "temporal",                                  // used in resource names
     "subdomain": "temporal.shinro.ai",                   // the stream page + app
     "consoles": [                                        // extra hostnames this stream's proxy guards
-      "demo-camunda-instance.shinro.ai",
+      "camunda-demo.shinro.ai",
       "demo-temporal-ui.shinro.ai"
     ]
   }
@@ -871,7 +872,7 @@ Everything per-stream is driven by one list in `cdk.json`, so adding a stream is
 ]
 ```
 
-**Naming rule:** use `live` everywhere the old repo used `demo`, and include the stream name: SSM prefix `/shinro/live/<stream>/`, pools `shinro-live-<stream>`, log groups `/shinro/live/*`, ECR `shinro-live-*`, stacks `ShinroLive*`. The old stack keeps running untouched in the same account and nothing clashes.
+**Naming rule:** use `live` everywhere the old repo used `demo`, and include the stream name: SSM prefix `/shinro/live/<stream>/`, one pool `shinro-live-demo` (groups named after each stream), log groups `/shinro/live/*`, ECR `shinro-live-*`, stacks `ShinroLive*`. The old stack keeps running untouched in the same account and nothing clashes.
 
 ## 3.2 What we copy from the old repo (patterns only)
 
@@ -913,11 +914,11 @@ Everything per-stream is driven by one list in `cdk.json`, so adding a stream is
 - **CloudFront distribution:** aliases `shinro.ai` and `*.shinro.ai`; the host→folder **CloudFront Function**; the behaviours from 1.11 (`/chat/*`, `/v2/*`, `/oauth2/*`, `/login`, `/settings` → EC2 uncached; `/assets/*` → EC2 cached; default → S3). The CloudFront Function must apply to the S3 default only.
 - **Route 53:**
   - Alias `shinro.ai` and `*.shinro.ai` → CloudFront. *The wildcard means a new stream subdomain needs no DNS change.*
-  - **A records** `demo-camunda-instance` and `demo-temporal-ui` → the Shinro EIP. These override the wildcard (1.1).
+  - **A records** `camunda-demo` and `demo-temporal-ui` → the Shinro EIP. These override the wildcard (1.1).
 - ⚠ **Before deploying, list the existing records** (e.g. `demo.shinro.ai` from the old stack) and check the wildcard won't hijack one.
 
 ### Stack 3 — `IdentityStack` (supersedes T-13's "reuse the pool")
-**Purpose:** one badge office per trade show.
+**Purpose:** one badge office for every trade show, with a badge stamp (group) per show.
 
 **One pool, created once**, then a small loop over `shinro:streams` for the per-stream pieces.
 
@@ -929,7 +930,7 @@ Once, for the whole product:
   - `email: UserPoolEmail.withSES(...)` pointing at the shared `shinro.ai` identity (requirement 3)
   - self-sign-up **off** (admin-create-only)
   - **`removalPolicy: RETAIN`** — a deleted pool means every customer loses access with no undo
-- **Managed Login domain**: one prefix, e.g. `shinro-demo-<account>`, with `managedLoginVersion: NEWER_MANAGED_LOGIN` plus a `CfnManagedLoginBranding` resource (requirement 4). Brand it with the Shinro logo and a line saying the code expires in a few minutes (4.13).
+- **Managed Login domain**: one prefix, e.g. `shinro-live-demo-<account>`, with `managedLoginVersion: NEWER_MANAGED_LOGIN` plus a `CfnManagedLoginBranding` resource (requirement 4). Brand it with the Shinro logo and a line saying the code expires in a few minutes (4.13).
 - **SES**: `ses.EmailIdentity` for `shinro.ai` with **Easy DKIM**, wired to the Route 53 zone so CDK writes the DKIM records. Then request **SES production access** (about a day). Until approved, SES only sends to addresses you've verified yourself.
 - **IAM role `shinro-live-user-admin`** (1.8), scoped to this pool's ARN.
 - **`RemovalPolicy.RETAIN`** — this one pool now holds *every* demo customer (5.12).
@@ -963,24 +964,24 @@ ECR repositories: `shinro-live-api`, `shinro-live-tool-exec`, `shinro-live-tempo
 
 - **New EC2** in a **private** subnet, **no public IP**, `CamundaSg`, SSM role, encrypted gp3 (start at **100 GiB**).
 - **Trim the Compose file first.** `camunda-full/docker-compose-full.yaml` runs the whole platform. The demo needs **`orchestration`, `elasticsearch`, `identity`, `keycloak`, `postgres`** plus the **OMS app**. Dropping `optimize`, `web-modeler` (+ its Postgres), `console`, `connectors` and `mailpit` saves several GB and removes four more things that can break. Size **after** trimming — `m7i.xlarge` (16 GiB) is plausible trimmed and tight untrimmed.
-- **Ports** (4.16): expose **8080** (web + REST) and **26500** (gRPC) to the Shinro SG only. Keep **9600**, **9200**, **18080**, **8084** and **8090** unreachable from outside the instance.
-- **`CamundaSg` correction:** the plan previously said "Operate port + 26500". In 8.8 that is **8080 + 26500** — one web port, not several.
+- **Ports** (4.16): expose **8080** (web + REST) and **26500** (gRPC) to the Shinro SG only. Also open **18080** (Keycloak) to the Shinro SG only — for token calls and the browser's login front channel through nginx. Keep **9600**, **9200**, **8084** and **8090** unreachable from outside the instance.
+- **`CamundaSg` correction:** the plan previously said "Operate port + 26500". In 8.8 that is **8080 + 26500 + 18080** — one web port, not several, plus Keycloak.
 
 **Config that must change from the local setup** (all in `assets/camunda-bundle/`):
 
 | Setting | Local | Deployed | Why |
 |---|---|---|---|
 | `server.forward-headers-strategy` | `none` | **`native`** (or `framework`) | Behind nginx-terminated TLS, `none` makes Camunda build `http://` redirect URIs and login fails (gotcha 5.32) |
-| `HOST` | `localhost` | `demo-camunda-instance.shinro.ai` | Browser-facing URLs |
+| `HOST` | `localhost` | `camunda-demo.shinro.ai` | Browser-facing URLs |
 | `KEYCLOAK_HOST` | `host.docker.internal` | `keycloak` | Container-to-container; the compose service name |
-| `camunda.operate.identity.redirectRootUrl` | `http://localhost:8088/operate` | `https://demo-camunda-instance.shinro.ai/operate` | Same for `tasklist` |
-| `CAMUNDA_SECURITY_AUTHENTICATION_OIDC_REDIRECTURI` | `http://localhost:8088/sso-callback` | `https://demo-camunda-instance.shinro.ai/sso-callback` | Must match what the IdP has registered |
+| `camunda.operate.identity.redirectRootUrl` | `http://localhost:8088/operate` | `https://camunda-demo.shinro.ai/operate` | Same for `tasklist` |
+| `CAMUNDA_SECURITY_AUTHENTICATION_OIDC_REDIRECTURI` | `http://localhost:8088/sso-callback` | `https://camunda-demo.shinro.ai/sso-callback` | Must match what the IdP has registered |
 | Keycloak admin | `admin/admin` | generated → Secrets Manager | The `.env` warns about this itself |
 | All demo client secrets (`secret`, `demo-*-secret`) | literals in `.env` | generated → Secrets Manager | Rendered at boot by `render-env.sh` |
 | `initialization.defaultRoles.admin.clients` | `[orchestration]` | **no demo client** | Granting admin to the client Shinro authenticates as is gotcha 5.31 |
 | Shinro / OMS client | `orchestration` + `secret` | **`shinro-assessment`**, read-only | Same reason |
 
-- **OIDC provider:** Keycloak stays, per decision 4.20. Camunda's `CAMUNDA_SECURITY_AUTHENTICATION_OIDC_*` properties are generic, so pointing them at Cognito is *configurable* — but the `aud` check makes it unlikely to work (5.33). Instead, add **Cognito as an identity provider inside the `camunda-platform` realm** so the user's existing Cognito session logs them into Camunda silently.
+- **OIDC provider:** Keycloak stays, per decision 4.20. Camunda's `CAMUNDA_SECURITY_AUTHENTICATION_OIDC_*` properties are generic, so pointing them at Cognito is *configurable* — but the `aud` check makes it unlikely to work (5.33). **No federation** (4.20): Cognito is *not* added to the Keycloak realm. Prospects log in a second time with the shared, read-only `demo` account.
 - **Seeding (T-15):** a one-time script deploying the demo BPMN with an **admin** credential demo users never receive. **Seed the OMS app's one BPMN only** — T-15 lists OMS + banking, but banking was removed from the jetson cluster on 2026-11-04 and the demo shows only the OMS app (DEPLOYMENT gap). Seed what the demo shows.
 - **Backups (T-19):** a **DLM** policy finding this disk by tag, daily snapshots, keep 7. These matter more than usual now, because the instance is **shared** — if one user corrupts it, every user is affected until it's restored.
 - **Alarms (T-20):** CloudWatch agent `mem_used_percent` and `disk_used_percent`.
@@ -993,14 +994,14 @@ ECR repositories: `shinro-live-api`, `shinro-live-tool-exec`, `shinro-live-tempo
 - **New EC2** in a **public** subnet with an **EIP** (allocated separately, as in the old repo). SGs: `ShinroCfSg` + `ShinroPublicSg`.
 - **Compose services:** `nginx` (also serving the **built UI** as static files — DEPLOYMENT decision 1), **one `oauth2-proxy` per stream**, `shinro-api`, `redis`, `tool-exec`. The compose file and the oauth2-proxy config are **templates rendered once per stream** at boot by `render-env.sh`, driven by the stream list in SSM. Never hand-maintain N copies.
 - **Redis on a persistent volume** — a named volume on the EBS disk, not the container's own layer. It holds session leases **and** live CLI tokens (gotcha 5.29).
-- **TLS certificate** for `demo-camunda-instance.shinro.ai` and `demo-temporal-ui.shinro.ai`: decision 4.5.
+- **TLS certificate** for `camunda-demo.shinro.ai` and `demo-temporal-ui.shinro.ai`: decision 4.5.
 - **nginx configuration:**
 
 | Listener | Host | Path | Does |
 |---|---|---|---|
 | `:80` | any | `/oauth2/*` | Check origin secret → the right stream's oauth2-proxy (chosen by `Host`) |
 | `:80` | any | `/chat/*`, `/v2/*` | Check origin secret → `auth_request` → shinro-api |
-| `:443` | `demo-camunda-instance.shinro.ai` | all | `auth_request` (temporal proxy) → Camunda private IP |
+| `:443` | `camunda-demo.shinro.ai` | all | `auth_request` (temporal proxy) → Camunda private IP |
 | `:443` | `demo-temporal-ui.shinro.ai` | all | `auth_request` (temporal proxy) → session lookup by email (4.7) → that user's NodePort, or the "start a migration" page |
 | `:80` | any | `/assets/*`, `/login`, `/settings` | Check origin secret → the built UI's static files |
 | internal (e.g. `:8000`) | — | **CLI routes only** | For terminal pods (`ShinroInternalSg`). Everything else on this listener → 404 |
@@ -1044,7 +1045,7 @@ The generated code is built and tested inside the user's terminal container by `
 ### Stack 9 — `ObservabilityStack` (T-20, T-33)
 - One log group per Compose service (including each oauth2-proxy), plus Container Insights.
 - **Alarms:** Camunda disk/memory/health; Shinro disk/memory; EKS node capacity and disk pressure; session count against the cap of 20 (a custom metric from the API); failed session starts; **LLM spend per day** (sent to CloudWatch by the API); **AWS Budgets** cost alarm.
-- Add **per-stream login failure** visibility: a metric filter on oauth2-proxy logs for repeated 403s tells you someone was added to the wrong pool (gotcha 5.18).
+- Add **per-stream login failure** visibility: a metric filter on oauth2-proxy logs for repeated 403s tells you someone was added to the wrong group (gotcha 5.18).
 - An **SNS topic** emailing the team when an alarm fires.
 
 ## 3.4 Build order
@@ -1055,10 +1056,10 @@ Each step is independently deployable and testable. **Don't advance until the "p
 |---|---|---|---|
 | 0 | Settle the Part 4 decisions. `cdk bootstrap`. **App side (DEPLOYMENT Phase 1):** the four app blockers done — demo login and entry, LLM key and limits, EKS `SessionController`, hosting code changes — and PR #395 merged | The demo passes on kind with the real login, and `linux/amd64` images build | — |
 | 1 | NetworkStack | The VPC exists; private subnets reach the internet via NAT | T-10, T-31 |
-| 2 | IdentityStack with **one** stream (temporal): pool, Managed Login, SES, clients | A test user receives an OTP email and signs in on the Cognito page. `curl` obtains a client-credentials token | T-13 (superseded in part) |
+| 2 | IdentityStack with **one** stream (temporal): pool, Managed Login, SES, clients | A test user receives an OTP email and signs in on the Cognito page | T-13 (superseded in part) |
 | 2a | Run the 1.8 runbook for a test email | They get a code and log in. After `admin-disable-user`, they can't | — |
 | 3 | RegistryStack + CamundaHostStack (trimmed Compose, Keycloak retained), and the OMS BPMN seeded | Camunda 8.8 starts privately on 8080/26500; a **`shinro-assessment`** Keycloak token is accepted; a demo user gets **403 on deploy/cancel/modify** (5.31); login works through nginx (5.32) | T-10, T-11, T-14, T-15, T-16 |
-| 4 | ShinroHostStack: nginx (with the built UI) + **one** oauth2-proxy + API + Redis + tool-exec + the Camunda console route | `demo-camunda-instance.shinro.ai` logs in end to end | T-12, T-18 |
+| 4 | ShinroHostStack: nginx (with the built UI) + **one** oauth2-proxy + API + Redis + tool-exec + the Camunda console route | `camunda-demo.shinro.ai` logs in end to end | T-12, T-18 |
 | 5 | EdgeStack | `temporal.shinro.ai` serves the public page; `/oauth2/start` logs in; `/chat`, `/v2` and the UI paths reach the app; a test user lands in a demo chat and connects to Camunda through the inventory scan | — |
 | 6 | EksStack + the session template + session controller + the email→session lookup | Two users open the same `demo-temporal-ui.shinro.ai` and each see **their own** session. A hand-set `X-Auth-Request-Email` changes nothing. After the TTL the page becomes "start a migration". `dev.sh probe`-style checks: one session can't reach another, the Kubernetes API or the metadata service | T-28, T-29, T-30, T-31, T-32 |
 | 6a | Terminal container in the session template + the `/v2/demo/terminal` relay + the internal CLI listener | "Run in terminal" opens a shell in **your** sandbox; a refresh reattaches; the one-time code can't be replayed; `go build` works; a pod reaches the CLI routes and **nothing else** on the API; `analyze` and `migrate-agent` both finish | — |
@@ -1141,9 +1142,9 @@ The app team owns the full list in their DEPLOYMENT. These need infra:
 ### 4.1 The hostname-to-stream rule — **adopt this**
 **Every hostname belongs to exactly one stream, and that stream's oauth2-proxy guards it.**
 
-This single rule is what makes per-stream pools workable. Without it you hit a dead end: a hostname serving two streams would need nginx to decide *which pool's login page* to show a visitor who arrives with no cookie — and it has no way to know.
+This single rule is what makes per-stream login workable. Without it you hit a dead end: a hostname serving two streams would need nginx to decide *which stream's oauth2-proxy* to ask about a visitor who arrives with no cookie — and it has no way to know.
 
-Under the rule, `demo-camunda-instance.shinro.ai` and `demo-temporal-ui.shinro.ai` belong to the **temporal** stream. Record the mapping in `shinro:streams` (3.1) so it's enforced by config rather than memory.
+Under the rule, `camunda-demo.shinro.ai` and `demo-temporal-ui.shinro.ai` belong to the **temporal** stream. Record the mapping in `shinro:streams` (3.1) so it's enforced by config rather than memory.
 
 ### 4.2 Which Cognito pool? — **Resolved: one new demo pool, one group per stream**
 - **The decision:** a single new pool `shinro-live-demo`, owned by CDK, with a **group per stream**. Users may belong to several.
@@ -1227,7 +1228,7 @@ A **warm pool** is a few empty sessions created in advance so nobody waits. **Re
 - **Resolved: (a).** Define a **demo role with read permissions only** and assign demo users to it. Do **not** give them the `admin` role that `initialization.defaultRoles` grants to `demo` locally. oauth2-proxy stays in front as the outer gate.
 - **Rejected (b):** nginx blocking write URLs by path and method. Operate uses `POST` for *searches*, so "GET only" breaks the UI.
 - **Rejected (c):** one fixed read-only identity injected by nginx — hard to do with OIDC, and it erases per-user audit.
-- **The two-logins problem that used to make (a) unattractive is solved by 4.20**: federate Keycloak to Cognito and the second login is silent.
+- **The two-logins problem that used to make (a) unattractive is accepted under 4.20**: no federation, so prospects log in again with the shared read-only `demo` account.
 - Still a **release blocker**: verify in build step 3 that a demo user gets 403 on deploy, cancel and modify against the *shared* instance.
 
 ### 4.12 Setting expectations on the request form
@@ -1299,12 +1300,12 @@ The code lives in `emptyDir` in the terminal pod. If the pod is replaced — a n
 # Part 5 — Gotchas: what goes wrong, why, and what to do
 
 ### 5.1 ACM certificates can't normally go on EC2
-- **Symptom:** you create an ACM certificate for `demo-camunda-instance.shinro.ai` and find no way to give it to nginx.
+- **Symptom:** you create an ACM certificate for `camunda-demo.shinro.ai` and find no way to give it to nginx.
 - **Why:** a standard ACM certificate's private key never leaves AWS; it can only be attached to AWS services.
 - **Fix:** certbot with the Route 53 plugin (recommended), ACM exportable certificates, or a load balancer. Decision 4.5.
 
 ### 5.2 The wildcard DNS record silently swallows deleted records
-- **Symptom:** someone deletes the `demo-camunda-instance` A record. The hostname still resolves — now via `*.shinro.ai` to CloudFront — and the user sees a baffling S3 "403 Access Denied."
+- **Symptom:** someone deletes the `camunda-demo` A record. The hostname still resolves — now via `*.shinro.ai` to CloudFront — and the user sees a baffling S3 "403 Access Denied."
 - **Why:** a specific record beats the wildcard; without it, the wildcard matches.
 - **Fix:** manage every record in CDK so it can't drift. **If a console shows an S3 error, check DNS first.**
 
@@ -1324,7 +1325,7 @@ The code lives in `emptyDir` in the terminal pod. If the pod is replaced — a n
 - **Fix:** keep the CloudFront rule in its own SG; use separate SGs for other ports.
 
 ### 5.6 The cookie domain covers every subdomain — which is the point, and a footgun
-- **What it buys:** `--cookie-domain=.shinro.ai` means signing in on `temporal.shinro.ai` also signs you in at `demo-camunda-instance.shinro.ai`. No second login. This is essential to the design.
+- **What it buys:** `--cookie-domain=.shinro.ai` means signing in on `temporal.shinro.ai` also signs you in at `camunda-demo.shinro.ai`. No second Cognito login (Camunda's own Keycloak login still follows, 4.20). This is essential to the design.
 - **The side effect:** the browser sends that cookie to *every* `*.shinro.ai` host, including other streams' pages. They can't decrypt it (different cookie secret), but see 5.19 for the name collision this creates.
 
 ### 5.7 Identity header spoofing
@@ -1359,7 +1360,7 @@ CloudFront's certificate must be in `us-east-1`. Keep **everything** in us-east-
 - **Risk:** `admin-create-user` without a password leaves the user in `FORCE_CHANGE_PASSWORD` ("must set a password at first login"), and email-OTP sign-in may not work from that state.
 - **What to do:** test it with one user in build step 2a. If OTP fails, add runbook step 2 (`admin-set-user-password --permanent` with a long random password nobody knows), which moves them to `CONFIRMED` while they still only ever use the code.
 
-### 5.16 Cost of passwordless, multiplied by pools
+### 5.16 Cost of passwordless
 Essentials is billed per **MAU** (monthly active user) per pool, SES per email (fractions of a cent). With one shared demo pool a person active in two streams is **one** MAU, not two, and there is one line item rather than N. Negligible at demo scale — still check the first bill.
 
 ### 5.17 OTP spam
@@ -1393,7 +1394,7 @@ Anyone can type a known customer's email on the right stream page and trigger a 
 - **Fix:** caching **disabled** and all cookies, headers and query strings forwarded on `/chat/*`, `/v2/*` and `/oauth2/*`. Verify with `curl -I` that responses carry `Cache-Control: no-store` and `X-Cache: Miss from cloudfront`. **Test this deliberately**, with two browsers, before go-live.
 
 ### 5.23 Callback URLs must list every console hostname
-- **Symptom:** login works on `temporal.shinro.ai` but fails on `demo-camunda-instance.shinro.ai` with a Cognito error about an invalid `redirect_uri`.
+- **Symptom:** login works on `temporal.shinro.ai` but fails on `camunda-demo.shinro.ai` with a Cognito error about an invalid `redirect_uri`.
 - **Why:** callback URLs can't use wildcards (1.7), and each hostname oauth2-proxy might start a login from needs its own entry.
 - **Fix:** build the callback list from the stream's `subdomain` plus every entry in its `consoles` list, in code, so adding a hostname updates Cognito automatically.
 
@@ -1435,7 +1436,7 @@ A new stream needs: the config entry, a deploy, an S3 folder with the stream's p
 
 ### 5.32 `forward-headers-strategy: none` breaks login behind nginx
 - **Symptom:** Camunda login fails with a redirect-URI mismatch, or bounces back to the login page forever.
-- **Why:** `.orchestration/application.yaml` sets `server.forward-headers-strategy: none`. nginx terminates TLS (1.2), so Camunda never learns the request was HTTPS and builds `http://demo-camunda-instance.shinro.ai/sso-callback` — which does not match the registered URI.
+- **Why:** `.orchestration/application.yaml` sets `server.forward-headers-strategy: none`. nginx terminates TLS (1.2), so Camunda never learns the request was HTTPS and builds `http://camunda-demo.shinro.ai/sso-callback` — which does not match the registered URI.
 - **Fix:** set it to **`native`** (or `framework`) and have nginx send `X-Forwarded-Proto: https`, exactly as the old repo's template already does.
 - **This is the same class of bug in a third place** — the old repo hit it with HyperDX, oauth2-proxy hits it behind CloudFront, and Camunda hits it behind nginx. Whenever something terminates TLS in front of an app that builds its own redirect URLs, check this first.
 
@@ -1480,7 +1481,7 @@ A new stream needs: the config entry, a deploy, an S3 folder with the stream's p
 | CloudWatch / agent / Container Insights | Monitoring / host metrics / k8s metrics | 1.13 |
 | ClusterRole / RBAC | Kubernetes' own permissions | 1.12 |
 | CodeBuild | Managed isolated build machines — not used (4.18) | 1.13 |
-| Cognito user pool | User directory + identity provider. **One per stream** | 1.7 |
+| Cognito user pool | User directory + identity provider. **One demo pool for all streams** | 1.7 |
 | Container / Image / Compose | Running app / packaged app / multi-container file | 1.4 |
 | Control plane | The Kubernetes brain, run by AWS | 1.12 |
 | Conversation id (`convid`) | Identifies one chat in the app: `/chat/<convid>` | 2.4 |
@@ -1518,7 +1519,7 @@ A new stream needs: the config entry, a deploy, an S3 folder with the stream's p
 | Managed Login | Cognito's newer login pages; required for passwordless | 1.7 |
 | Manifest | YAML describing Kubernetes objects | 1.12 |
 | Group (Cognito) | Label on users; **membership is the per-stream permission** | 1.7, 1.8 |
-| MAU | Monthly active user — Cognito's billing unit, per pool | 1.7, 5.16 |
+| MAU | Monthly active user — Cognito's billing unit; one per person across streams | 1.7, 5.16 |
 | NAT Gateway | Outbound-only internet for private subnets | 1.3 |
 | Namespace (Kubernetes) | Isolated folder in a cluster; one per session | 1.12 |
 | Namespace (Temporal) | Temporal's own grouping — a different thing | 1.12 |
@@ -1541,7 +1542,7 @@ A new stream needs: the config entry, a deploy, an S3 folder with the stream's p
 | Private / public subnet | Hidden / reachable part of the VPC | 1.3 |
 | Redis | In-memory store: state, run lock, session leases | 1.4 |
 | Refresh token | Long-lived token for renewing others | 1.6 |
-| Removal policy (DESTROY / RETAIN) | What happens on stack deletion. **RETAIN the pools** | 1.14, 5.12 |
+| Removal policy (DESTROY / RETAIN) | What happens on stack deletion. **RETAIN the pool** | 1.14, 5.12 |
 | Replacement | CloudFormation deleting and recreating a resource | 1.14, 5.3 |
 | Resource server / Scope | API definition / permission name in a token | 1.6 |
 | ResourceQuota / LimitRange | CPU/RAM caps per namespace / container | 1.12 |
@@ -1553,12 +1554,12 @@ A new stream needs: the config entry, a deploy, an S3 folder with the stream's p
 | Security group (SG) | Per-server firewall; can reference other SGs | 1.3 |
 | SES / sandbox / production access | AWS email / test-only mode / approved to send to anyone | 1.7 |
 | Session controller | Shinro app code creating and deleting session namespaces | 2.6, Stack 7 |
-| Session id | Internal id for the namespace, Redis key and image tag. **Never in a URL** | 2.6, 4.6 |
+| Session id | Internal id for the namespace and Redis key. **Never in a URL** | 2.6, 4.6 |
 | Session lookup | nginx asking shinro-api "where is this user's session?" on every request | 2.7, 4.7 |
 | SNI | Hostname announced at the start of TLS | 1.2 |
 | SNS | Notifications (alarm emails) | 1.13 |
 | SSM Parameter Store / Session Manager / Run Command | Config store / shell without SSH / remote commands | 1.13 |
-| **Stream** | One migration path we sell, with its own subdomain, pool and oauth2-proxy | 0.1, 1.7 |
+| **Stream** | One migration path we sell, with its own subdomain, Cognito group and oauth2-proxy | 0.1, 1.7 |
 | singleProcessOOMKill | Kubelet (not pod) setting; stops one command OOM-ing the container | 5.30 |
 | Task queue | Named line of work in Temporal | 1.12 |
 | Terminal proxy | The API endpoint relaying browser WebSocket ↔ ttyd | 1.15 |

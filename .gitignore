@@ -1,0 +1,16 @@
+*.js
+!jest.config.js
+*.d.ts
+node_modules
+
+# CDK asset staging directory
+.cdk.staging
+cdk.out
+
+# Local only
+.DS_Store
+__pycache__/
+logs_*.zip
+# Rendered on the hosts at boot; never in the repo
+assets/*/run/
+.env

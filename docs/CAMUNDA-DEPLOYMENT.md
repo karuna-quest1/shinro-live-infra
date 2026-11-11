@@ -67,7 +67,7 @@ One hostname, two upstreams, split on `/auth`.
 ```nginx
 server {
   listen 443 ssl;
-  server_name demo-camunda-instance.shinro.ai;
+  server_name camunda-demo.shinro.ai;
   # certbot cert — see PLAN 4.5
 
   # ---- oauth2-proxy (the Cognito gate) ----
@@ -139,13 +139,13 @@ server {
 | Setting | Local | Deployed |
 |---|---|---|
 | `server.forward-headers-strategy` | `none` | **`native`** |
-| `OIDC_AUTHORIZATIONURI` | `http://localhost:18080/auth/realms/…/auth` | `https://demo-camunda-instance.shinro.ai/auth/realms/camunda-platform/protocol/openid-connect/auth` |
+| `OIDC_AUTHORIZATIONURI` | `http://localhost:18080/auth/realms/…/auth` | `https://camunda-demo.shinro.ai/auth/realms/camunda-platform/protocol/openid-connect/auth` |
 | `OIDC_TOKENURI` | `http://host.docker.internal:18080/…/token` | `http://keycloak:18080/auth/realms/camunda-platform/protocol/openid-connect/token` |
 | `OIDC_JWKSETURI` | `http://host.docker.internal:18080/…/certs` | `http://keycloak:18080/auth/realms/camunda-platform/protocol/openid-connect/certs` |
-| `OIDC_REDIRECTURI` | `http://localhost:8088/sso-callback` | `https://demo-camunda-instance.shinro.ai/sso-callback` |
+| `OIDC_REDIRECTURI` | `http://localhost:8088/sso-callback` | `https://camunda-demo.shinro.ai/sso-callback` |
 | `CAMUNDA_IDENTITY_ISSUERBACKENDURL` | `http://host.docker.internal:18080/auth/realms/camunda-platform` | `http://keycloak:18080/auth/realms/camunda-platform` |
-| `operate.identity.redirectRootUrl` | `http://localhost:8088/operate` | `https://demo-camunda-instance.shinro.ai/operate` |
-| `tasklist.identity.redirectRootUrl` | `http://localhost:8088/tasklist` | `https://demo-camunda-instance.shinro.ai/tasklist` |
+| `operate.identity.redirectRootUrl` | `http://localhost:8088/operate` | `https://camunda-demo.shinro.ai/operate` |
+| `tasklist.identity.redirectRootUrl` | `http://localhost:8088/tasklist` | `https://camunda-demo.shinro.ai/tasklist` |
 
 **Public for the browser, internal for the server.** That is the whole fix.
 
@@ -155,7 +155,7 @@ server {
 
 | Setting | Value |
 |---|---|
-| `KC_HOSTNAME` | `https://demo-camunda-instance.shinro.ai/auth` |
+| `KC_HOSTNAME` | `https://camunda-demo.shinro.ai/auth` |
 | `KC_PROXY_HEADERS` | `xforwarded` |
 | `KC_HTTP_ENABLED` | `true` (TLS terminates at nginx) |
 | `KC_BOOTSTRAP_ADMIN_USERNAME` / `PASSWORD` | generated → Secrets Manager (**not** `admin`/`admin`) |
@@ -166,7 +166,7 @@ server {
 
 | Variable | Local | Deployed |
 |---|---|---|
-| `HOST` | `localhost` | `demo-camunda-instance.shinro.ai` |
+| `HOST` | `localhost` | `camunda-demo.shinro.ai` |
 | `KEYCLOAK_HOST` | `host.docker.internal` | `keycloak` |
 | every `*_SECRET`, `KEYCLOAK_ADMIN_PASSWORD` | literals | generated → Secrets Manager, rendered at boot by `render-env.sh` |
 
@@ -243,7 +243,7 @@ component-presets:
 
 | Setting | Where | Value |
 |---|---|---|
-| `CAMUNDA_SECURITY_AUTHENTICATION_OIDC_REDIRECTURI` | Camunda env (§4.1) | `https://demo-camunda-instance.shinro.ai/sso-callback` |
+| `CAMUNDA_SECURITY_AUTHENTICATION_OIDC_REDIRECTURI` | Camunda env (§4.1) | `https://camunda-demo.shinro.ai/sso-callback` |
 | The client's **registered** `redirectUris` | **Keycloak**, client `orchestration` | the same URL |
 
 §4.1 covers the first. The second is separate: the `orchestration` client ships registered for `http://localhost:8088/sso-callback` only, so the first login attempt fails with:
@@ -255,7 +255,7 @@ Invalid parameter: redirect_uri
 
 The error names no setting and appears *after* a successful Cognito sign-in, which makes it easy to misread as a Cognito or nginx problem.
 
-**Fix:** set the `orchestration` application's `root-url` to `https://demo-camunda-instance.shinro.ai` in `.identity/application.yaml`, so the identity preset seeds the right value. Verify after deploy with:
+**Fix:** set the `orchestration` application's `root-url` to `https://camunda-demo.shinro.ai` in `.identity/application.yaml`, so the identity preset seeds the right value. Verify after deploy with:
 
 ```bash
 curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
@@ -301,7 +301,7 @@ Everything else — auth method, audience, the token URL's path — is unchanged
 - `8088` is only a local *host port mapping* of container `8080`. It does not exist in deployment.
 - gRPC goes **direct**, not through nginx. Proxying it needs `grpc_pass` and buys nothing inside the VPC.
 - tool-exec uses the **back channel only** — no browser, so no public hostname and no Cognito.
-- The browser-facing link shown in chat stays `https://demo-camunda-instance.shinro.ai`.
+- The browser-facing link shown in chat stays `https://camunda-demo.shinro.ai`.
 
 ---
 
@@ -361,7 +361,7 @@ Two things this proves beyond the table:
 - [ ] A `shinro-assessment` token is **accepted** — this is the `iss` check, the likeliest failure
 - [ ] The same token is **refused** for deploy, cancel and modify
 - [ ] `demo` cannot deploy, cancel or modify in the UI
-- [ ] `curl https://demo-camunda-instance.shinro.ai/auth/` without a cookie **redirects to login**, and never serves Keycloak
+- [ ] `curl https://camunda-demo.shinro.ai/auth/` without a cookie **redirects to login**, and never serves Keycloak
 - [ ] Nothing but 8080, 26500 and 18080 is reachable from the Shinro host; nothing at all from anywhere else
 
 **Operate**
@@ -373,9 +373,9 @@ Two things this proves beyond the table:
 
 ## 9. Known open items
 
-1. **Which workflows get seeded.** T-15 says OMS + banking; banking appears to be gone. Confirm before writing the seed script.
-2. **The exact read-only role name** in 8.8, and proving a demo user actually gets 403 on deploy/cancel/modify (§5.1, §7 "still unproven", decision 4.11). **This is now the only substantial unknown in this document.**
-3. **The `aud` claim on `shinro-assessment`** (§5.2) — verify it contains `orchestration-api`.
+1. ~~**Which workflows get seeded.**~~ — **resolved**: the OMS app deploys `order-processing` itself on startup; no seed script.
+2. **The exact read-only role name** in 8.8: **resolved 2026-11-10**, it's `readonly-admin`, and on the deployed instance only `demo` and `shinro-assessment` hold it (admin = `orchestration`, `oms-app`). **Still open:** proving a write as `demo` gets 403 on deploy/cancel/modify (§5.1, decision 4.11).
+3. ~~**The `aud` claim on `shinro-assessment`**~~ — **resolved 2026-11-10**: `aud` = `shinro-assessment`, `orchestration-api`, `account`.
 4. **Second login UX.** Prospects must be told `demo`/`demo`. Decide where that appears in the chat UI.
 
 ~~`KC_HOSTNAME` with a path~~ — **resolved by the §7 test.** It works; no separate hostname needed.

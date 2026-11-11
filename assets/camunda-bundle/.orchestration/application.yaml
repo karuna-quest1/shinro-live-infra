@@ -1,0 +1,118 @@
+# Camunda 8.8.32 orchestration config for the shared demo.
+# Upstream: camunda-distributions@cd44d741 .orchestration/application.yaml.
+# Changes are marked "LIVE:" (docs/CAMUNDA-DEPLOYMENT.md sections 4.1 and 5).
+
+spring:
+  profiles:
+    active: "identity,operate,tasklist,broker,consolidated-auth"
+
+management:
+  server:
+    port: 9600
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+
+server:
+  # LIVE: nginx terminates TLS. With `none`, Camunda builds http:// redirect
+  # URIs and the login loops (gotcha 5.32). Verified in section 7.
+  forward-headers-strategy: native
+  address: 0.0.0.0
+
+zeebe:
+  host: 0.0.0.0
+  log:
+    level: "info"
+
+  broker:
+    gateway:
+      enable: true
+      network:
+        host: 0.0.0.0
+        port: 26500
+
+    network:
+      host: 0.0.0.0
+      commandApi:
+        port: 26501
+      internalApi:
+        port: 26502
+
+    data:
+      snapshotPeriod: 5m
+
+    threads:
+      cpuThreadCount: "3"
+      ioThreadCount: "3"
+
+    exporters:
+      elasticsearch:
+        className: "io.camunda.zeebe.exporter.ElasticsearchExporter"
+        args:
+          url: "http://elasticsearch:9200"
+          # Small batches so the demo shows changes in Operate quickly.
+          bulk:
+            size: 1
+          index:
+            prefix: "zeebe-record"
+      CamundaExporter:
+        className: "io.camunda.exporter.CamundaExporter"
+        args:
+          connect:
+            type: elasticsearch
+            url: "http://elasticsearch:9200"
+          createSchema: true
+
+camunda:
+  persistent:
+    sessions:
+      enabled: true
+
+  rest:
+    query:
+      enabled: true
+
+  security:
+    authentication:
+      method: "oidc"
+      unprotectedApi: false
+    authorizations:
+      enabled: true
+    initialization:
+      defaultRoles:
+        # LIVE: `demo` removed from admin. Only Camunda's own client and the
+        # internal OMS worker keep it. Nothing a prospect or Shinro uses is admin
+        # (gotcha 5.31).
+        admin:
+          clients:
+            - orchestration
+            - oms-app
+        # LIVE: read-only for every prospect and for Shinro's assessment tool
+        # (decision 4.11). RELEASE BLOCKER: prove `demo` gets 403 on deploy,
+        # cancel and modify, and that `readonly-admin` is the 8.8 role name
+        # (section 9, item 2).
+        readonly-admin:
+          users:
+            - demo
+          clients:
+            - shinro-assessment
+
+  database:
+    index:
+      numberOfReplicas: 0
+  data:
+    secondary-storage:
+      type: elasticsearch
+      elasticsearch:
+        url: "http://elasticsearch:9200"
+
+  operate:
+    persistentSessionsEnabled: true
+    identity:
+      # LIVE: public URL (HOST is set on the container).
+      redirectRootUrl: "https://${HOST}/operate"
+
+  tasklist:
+    identity:
+      redirectRootUrl: "https://${HOST}/tasklist"

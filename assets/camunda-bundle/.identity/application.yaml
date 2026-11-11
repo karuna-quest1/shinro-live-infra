@@ -1,0 +1,129 @@
+# Camunda Identity 8.8 config for the shared demo: seeds Keycloak's realm.
+# Upstream: camunda-distributions@cd44d741 .identity/application.yaml.
+# Changes are marked "LIVE:" (docs/CAMUNDA-DEPLOYMENT.md section 5).
+# LIVE: presets for dropped components (console, optimize, web modeler,
+# connectors) removed.
+
+identity:
+  url: "http://localhost:8084"
+  flags:
+    multi-tenancy: "false"
+
+  authProvider:
+    # LIVE: the public issuer (Keycloak's KC_HOSTNAME); backend calls stay internal.
+    issuer-url: "https://${HOST}/auth/realms/camunda-platform"
+    backend-url: "http://${KEYCLOAK_HOST}:18080/auth/realms/camunda-platform"
+
+  component-presets:
+    identity:
+      apis:
+        - name: "Camunda Identity Resource Server"
+          audience: "camunda-identity-resource-server"
+          permissions:
+            - definition: read
+              description: "Read permission"
+            - definition: "read:users"
+              description: "Read users permission"
+            - definition: write
+              description: "Write permission"
+      roles:
+        - name: "ManagementIdentity"
+          description: "Provides full access to Identity"
+          permissions:
+            - audience: "camunda-identity-resource-server"
+              definition: read
+            - audience: "camunda-identity-resource-server"
+              definition: write
+    orchestration:
+      applications:
+        - name: Orchestration
+          id: orchestration
+          type: confidential
+          secret: ${VALUES_KEYCLOAK_INIT_ORCHESTRATION_SECRET}
+          # LIVE: registers https://<public host>/sso-callback on the Keycloak
+          # client. Without it: "Invalid parameter: redirect_uri" (section 5.4).
+          root-url: "https://${HOST}"
+          redirect-uris:
+            - "/sso-callback"
+        # LIVE: Shinro's assessment tool. Read only, audience orchestration-api
+        # (section 5.2). CHECK after deploy: its token's `aud` contains orchestration-api.
+        - name: Shinro Assessment
+          id: shinro-assessment
+          type: m2m
+          secret: ${VALUES_KEYCLOAK_INIT_SHINRO_ASSESSMENT_SECRET}
+          permissions:
+            - audience: "orchestration-api"
+              definition: read:*
+        # LIVE: the OMS job worker, off the `orchestration` client (section 5.3).
+        - name: OMS App
+          id: oms-app
+          type: m2m
+          secret: ${VALUES_KEYCLOAK_INIT_OMS_APP_SECRET}
+          permissions:
+            - audience: "orchestration-api"
+              definition: read:*
+            - audience: "orchestration-api"
+              definition: write:*
+      apis:
+        - name: "Orchestration API"
+          audience: "orchestration-api"
+          permissions:
+            - definition: read:*
+              description: "Read permission"
+            - definition: write:*
+              description: "Write permission"
+      roles:
+        - name: "Orchestration"
+          description: "Grants full access to Orchestration"
+          permissions:
+            - audience: "orchestration-api"
+              definition: read:*
+            - audience: "orchestration-api"
+              definition: write:*
+        # LIVE: what the shared demo user holds.
+        - name: "Orchestration Read"
+          description: "Read-only access to Orchestration"
+          permissions:
+            - audience: "orchestration-api"
+              definition: read:*
+
+keycloak:
+  url: "http://${KEYCLOAK_HOST}:18080/auth"
+  setup:
+    # LIVE: generated, from Secrets Manager. No admin/admin fallback.
+    user: "${KEYCLOAK_ADMIN_USER}"
+    password: "${KEYCLOAK_ADMIN_PASSWORD}"
+  init:
+    orchestration:
+      secret: ${VALUES_KEYCLOAK_INIT_ORCHESTRATION_SECRET}
+  environment:
+    clients:
+      - name: Identity
+        id: "camunda-identity"
+        type: CONFIDENTIAL
+        secret: ${CAMUNDA_IDENTITY_CLIENT_SECRET}
+        root-url: "http://localhost:8084"
+        redirect-uris:
+          - "/auth/login-callback"
+  users:
+    # Shared by every prospect; printed beside the link in the chat (section 1).
+    - username: "demo"
+      password: "demo"
+      firstName: "Demo"
+      lastName: "User"
+      email: "demo@example.org"
+      # LIVE: was ManagementIdentity, Optimize, Web Modeler, Web Modeler Admin,
+      # Console, Orchestration.
+      roles:
+        - Orchestration Read
+
+server:
+  port: 8084
+
+spring:
+  profiles:
+    active: keycloak
+
+camunda:
+  identity:
+    audience: "camunda-identity-resource-server"

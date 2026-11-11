@@ -1,0 +1,257 @@
+# Shared demo Camunda 8.8.32 for Shinro live (docs/CAMUNDA-DEPLOYMENT.md).
+#
+# Trimmed from camunda-distributions@cd44d741 docker-compose-full.yaml to the
+# six services the demo needs (section 2). Dropped: optimize, connectors,
+# web-modeler (+ db, websockets), console, mailpit.
+#
+# Published ports are reachable only from the Shinro EC2 (security group
+# shinro-live-camunda): 8080 web + REST, 26500 gRPC, 18080 Keycloak.
+# Everything else stays on the Docker networks.
+#
+# Browser-facing URLs use the public host (${HOST}); server-to-server calls use
+# service names. That split is the whole fix (section 4.1).
+
+name: camunda
+
+x-logs: &logs
+  driver: awslogs
+  options: &logopts
+    awslogs-region: ${AWS_REGION}
+    awslogs-create-group: "false"
+
+services:
+
+  orchestration: # Zeebe + Operate + Tasklist + REST
+    image: camunda/camunda:${CAMUNDA_VERSION}
+    container_name: orchestration
+    ports:
+      - "8080:8080"
+      - "26500:26500"
+    environment:
+      HOST: ${HOST}
+      CAMUNDA_SECURITY_AUTHENTICATION_OIDC_CLIENTID: ${ORCHESTRATION_CLIENT_ID}
+      CAMUNDA_SECURITY_AUTHENTICATION_OIDC_CLIENTSECRET: ${ORCHESTRATION_CLIENT_SECRET}
+      CAMUNDA_SECURITY_AUTHENTICATION_OIDC_AUDIENCES_0: orchestration
+      CAMUNDA_SECURITY_AUTHENTICATION_OIDC_AUDIENCES_1: orchestration-api
+      # Front channel: the browser follows this, so it is the public URL.
+      CAMUNDA_SECURITY_AUTHENTICATION_OIDC_AUTHORIZATIONURI: https://${HOST}/auth/realms/camunda-platform/protocol/openid-connect/auth
+      CAMUNDA_SECURITY_AUTHENTICATION_OIDC_REDIRECTURI: https://${HOST}/sso-callback
+      # Back channel: server to server, internal.
+      CAMUNDA_SECURITY_AUTHENTICATION_OIDC_TOKENURI: http://keycloak:18080/auth/realms/camunda-platform/protocol/openid-connect/token
+      CAMUNDA_SECURITY_AUTHENTICATION_OIDC_JWKSETURI: http://keycloak:18080/auth/realms/camunda-platform/protocol/openid-connect/certs
+      CAMUNDA_SECURITY_AUTHENTICATION_OIDC_USERNAMECLAIM: preferred_username
+      CAMUNDA_SECURITY_AUTHENTICATION_OIDC_CLIENTIDCLAIM: client_id
+      ZEEBE_BROKER_GATEWAY_SECURITY_AUTHENTICATION_IDENTITY_ISSUERBACKENDURL: http://keycloak:18080/auth/realms/camunda-platform
+      CAMUNDA_IDENTITY_ISSUERBACKENDURL: http://keycloak:18080/auth/realms/camunda-platform
+      CAMUNDA_IDENTITY_BASEURL: http://identity:8084
+      CAMUNDA_IDENTITY_AUDIENCE: orchestration-api
+      # Shared by every prospect; 512m upstream is sized for a laptop.
+      JAVA_TOOL_OPTIONS: "-Xms2g -Xmx2g"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 10s bash -c ':> /dev/tcp/127.0.0.1/9600' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    volumes:
+      - orchestration:/usr/local/camunda/data
+      - "./.orchestration/application.yaml:/usr/local/camunda/config/application.yaml:ro"
+    networks:
+      - camunda-platform
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    logging:
+      <<: *logs
+      options:
+        <<: *logopts
+        awslogs-group: /shinro-live/camunda/orchestration
+
+  identity: # Seeds Keycloak's clients, roles and the demo user
+    image: camunda/identity:${CAMUNDA_IDENTITY_VERSION}
+    container_name: identity
+    environment:
+      IDENTITY_DATABASE_HOST: postgres
+      IDENTITY_DATABASE_PORT: 5432
+      IDENTITY_DATABASE_NAME: ${POSTGRES_DB}
+      IDENTITY_DATABASE_USERNAME: ${POSTGRES_USER}
+      IDENTITY_DATABASE_PASSWORD: ${POSTGRES_PASSWORD}
+      VALUES_KEYCLOAK_INIT_ORCHESTRATION_SECRET: ${ORCHESTRATION_CLIENT_SECRET}
+      VALUES_KEYCLOAK_INIT_SHINRO_ASSESSMENT_SECRET: ${SHINRO_ASSESSMENT_CLIENT_SECRET}
+      VALUES_KEYCLOAK_INIT_OMS_APP_SECRET: ${OMS_APP_CLIENT_SECRET}
+      CAMUNDA_IDENTITY_CLIENT_SECRET: ${IDENTITY_CLIENT_SECRET}
+      KEYCLOAK_ADMIN_USER: ${KEYCLOAK_ADMIN_USER}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      HOST: ${HOST}
+      KEYCLOAK_HOST: ${KEYCLOAK_HOST}
+      RESOURCE_PERMISSIONS_ENABLED: ${RESOURCE_AUTHORIZATIONS_ENABLED}
+      management.endpoints.web.exposure.include: health
+      management.endpoint.health.probes.enabled: "true"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--tries=1", "--spider", "http://localhost:8082/actuator/health"]
+      interval: 5s
+      timeout: 15s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
+    volumes:
+      - "./.identity/application.yaml:/app/application.yaml:ro"
+    networks:
+      - camunda-platform
+      - identity-network
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    logging:
+      <<: *logs
+      options:
+        <<: *logopts
+        awslogs-group: /shinro-live/camunda/identity
+
+  postgres: # Keycloak's store
+    image: postgres:${POSTGRES_VERSION}
+    container_name: postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -d $${POSTGRES_DB} -U $${POSTGRES_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    networks:
+      - identity-network
+    logging:
+      <<: *logs
+      options:
+        <<: *logopts
+        awslogs-group: /shinro-live/camunda/postgres
+
+  keycloak:
+    image: camunda/keycloak:${KEYCLOAK_SERVER_VERSION}
+    container_name: keycloak
+    command: [start]
+    ports:
+      - "18080:18080"
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      KC_DB_USERNAME: ${POSTGRES_USER}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      # TLS ends at nginx on the Shinro EC2.
+      KC_HTTP_ENABLED: "true"
+      KC_HTTP_PORT: 18080
+      KC_HTTP_RELATIVE_PATH: /auth
+      # Public issuer on both channels, so `iss` matches (section 4.2, verified in section 7).
+      KC_HOSTNAME: https://${HOST}/auth
+      KC_PROXY_HEADERS: xforwarded
+      KC_HOSTNAME_STRICT: "false"
+      KC_HEALTH_ENABLED: "true"
+      KC_TRANSACTION_XA_ENABLED: "false"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9000 &&
+          echo -e 'GET /auth/health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          timeout 5 cat <&3 | grep -q '200 OK'
+      interval: 15s
+      timeout: 15s
+      retries: 15
+      start_period: 30s
+    networks:
+      - camunda-platform
+      - identity-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      <<: *logs
+      options:
+        <<: *logopts
+        awslogs-group: /shinro-live/camunda/keycloak
+
+  elasticsearch: # Operate's data. Instance-local only.
+    image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTIC_VERSION}
+    container_name: elasticsearch
+    environment:
+      - bootstrap.memory_lock=true
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cat/health | grep -q green"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    volumes:
+      - elastic:/usr/share/elasticsearch/data
+    networks:
+      - camunda-platform
+    logging:
+      <<: *logs
+      options:
+        <<: *logopts
+        awslogs-group: /shinro-live/camunda/elasticsearch
+
+  oms-app: # The demo's job workers. Deploys its BPMN on startup (the T-15 seed).
+    build:
+      context: ${OMS_APP_REPO}#${OMS_APP_REF}
+    image: shinro-live/oms-app:${OMS_APP_REF}
+    container_name: oms-camunda-app
+    environment:
+      ZEEBE_GRPC_ADDRESS: http://orchestration:26500
+      ZEEBE_REST_ADDRESS: http://orchestration:8080
+      CAMUNDA_AUTH_METHOD: oidc
+      # Its own client, never `orchestration` (section 5.3).
+      CAMUNDA_CLIENT_ID: oms-app
+      CAMUNDA_CLIENT_SECRET: ${OMS_APP_CLIENT_SECRET}
+      CAMUNDA_OAUTH_TOKEN_URL: http://keycloak:18080/auth/realms/camunda-platform/protocol/openid-connect/token
+      CAMUNDA_TOKEN_AUDIENCE: orchestration-api
+      HTTP_PORT: "8090"
+    # Instance-local, for debugging over SSM only.
+    ports:
+      - "127.0.0.1:8090:8090"
+    restart: unless-stopped
+    networks:
+      - camunda-platform
+    depends_on:
+      orchestration:
+        condition: service_healthy
+      identity:
+        condition: service_healthy
+    logging:
+      <<: *logs
+      options:
+        <<: *logopts
+        awslogs-group: /shinro-live/camunda/oms-app
+
+volumes:
+  orchestration:
+  elastic:
+  postgres:
+
+networks:
+  camunda-platform:
+    name: camunda-platform
+  identity-network:
+    name: identity-network

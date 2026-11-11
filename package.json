@@ -1,0 +1,31 @@
+{
+  "name": "shinro-live-infra",
+  "version": "0.1.0",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "test": "jest",
+    "cdk": "cdk",
+    "synth": "cdk synth",
+    "diff": "cdk diff"
+  },
+  "devDependencies": {
+    "@swc/core": "^1.15.0",
+    "@swc/jest": "^0.2.39",
+    "@types/jest": "^30",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^24.10.1",
+    "aws-cdk": "2.1147.0",
+    "cdk-nag": "^3.0.2",
+    "jest": "^30",
+    "js-yaml": "^5.5.0",
+    "tsx": "^4.23.0",
+    "typescript": "~7.0.2"
+  },
+  "dependencies": {
+    "@aws-cdk/lambda-layer-kubectl-v36": "^2.0.1",
+    "aws-cdk-lib": "^2.275.0",
+    "constructs": "^10.5.0"
+  },
+  "private": true
+}

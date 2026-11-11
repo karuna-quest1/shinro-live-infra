@@ -1,0 +1,104 @@
+# The Shinro EC2 (PLAN-v2 Stack 6). One oauth2-proxy per stream is added by
+# run/compose.streams.yaml, which bin/render.py writes from the stream list.
+#
+#   nginx        :80 from CloudFront (app paths), :443 the two demo consoles
+#   shinro-api   the FastAPI app, incl. its own Cognito login and the session controller
+#   tool-exec    Camunda assessment tools
+#   redis        leases, CLI tokens, tool job stream; on a named volume (gotcha 5.29)
+#
+# Images come from run/images.env: the app's by digest from /shinro/live/release,
+# the support images pinned in the infra config.
+
+name: shinro
+
+x-logs: &logs
+  driver: awslogs
+  options: &logopts
+    awslogs-region: ${AWS_REGION}
+    awslogs-create-group: "false"
+
+services:
+
+  nginx:
+    image: ${NGINX_IMAGE}
+    container_name: nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./run/nginx:/etc/nginx/conf.d:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    restart: unless-stopped
+    depends_on:
+      - shinro-api
+    networks: [shinro]
+    logging:
+      <<: *logs
+      options:
+        <<: *logopts
+        awslogs-group: /shinro-live/shinro/nginx
+
+  shinro-api:
+    image: ${API_IMAGE}
+    container_name: shinro-api
+    env_file: ./run/api.env
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks: [shinro]
+    logging:
+      <<: *logs
+      options:
+        <<: *logopts
+        awslogs-group: /shinro-live/shinro/shinro-api
+
+  tool-exec:
+    image: ${TOOL_EXEC_IMAGE}
+    container_name: tool-execution
+    env_file: ./run/tool-exec.env
+    volumes:
+      - tool_output:/app/output
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks: [shinro]
+    logging:
+      <<: *logs
+      options:
+        <<: *logopts
+        awslogs-group: /shinro-live/shinro/tool-exec
+
+  redis:
+    image: ${REDIS_IMAGE}
+    container_name: redis
+    environment:
+      # Append-only file: leases and live CLI tokens survive a restart.
+      REDIS_ARGS: "--appendonly yes --appendfsync everysec"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    networks:
+      shinro:
+        # The app's local default name, still hard-coded in places.
+        aliases: [redis-stack]
+    logging:
+      <<: *logs
+      options:
+        <<: *logopts
+        awslogs-group: /shinro-live/shinro/redis
+
+volumes:
+  redis_data:
+  tool_output:
+
+networks:
+  shinro:
+    name: shinro
