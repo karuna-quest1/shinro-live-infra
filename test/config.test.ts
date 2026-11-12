@@ -34,6 +34,10 @@ describe('parseStreams', () => {
     expect(() => parseStreams(raw)).toThrow(message);
   });
 
+  test('rejects a stream named after the staff group', () => {
+    expect(() => parseStreams([{ ...temporal, name: 'developer' }])).toThrow(/reserved for the staff group/);
+  });
+
   test('rejects duplicate stream names', () => {
     const other = { name: 'temporal', subdomain: 'other.shinro.ai' };
     expect(() => parseStreams([temporal, other])).toThrow(/duplicate stream name/);

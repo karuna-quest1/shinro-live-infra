@@ -1,6 +1,6 @@
 import * as cdk from 'aws-cdk-lib/core';
 import { Template } from 'aws-cdk-lib/assertions';
-import { LiveConfig, parseStreams } from '../lib/config';
+import { IDENTITY, LiveConfig, parseStreams } from '../lib/config';
 import { IdentityStack, USER_ADMIN_ACTIONS } from '../lib/stacks/identity-stack';
 
 const env = { account: '111111111111', region: 'us-east-1' };
@@ -67,6 +67,24 @@ describe('the demo pool', () => {
 
   test('SES identity for shinro.ai', () => {
     before.hasResourceProperties('AWS::SES::EmailIdentity', { EmailIdentity: 'shinro.ai' });
+  });
+});
+
+describe('the staff group', () => {
+  test('developer exists, alongside the stream group and no others', () => {
+    before.hasResourceProperties('AWS::Cognito::UserPoolGroup', { GroupName: 'developer' });
+    before.resourceCountIs('AWS::Cognito::UserPoolGroup', 2);
+  });
+
+  test('its name is the one core/rbac.py maps to Role.DEVELOPER', () => {
+    // Lowercase: map_groups_to_roles lowercases the group before the lookup.
+    expect(IDENTITY.staffGroup).toBe('developer');
+  });
+
+  test('it is created once, not per stream', () => {
+    const two = synth({ streams: parseStreams([temporal, { name: 'next', subdomain: 'next.shinro.ai' }]) });
+    expect(ofType(two, 'AWS::Cognito::UserPoolGroup').map(([, r]) => r.Properties.GroupName).sort())
+      .toEqual(['developer', 'next', 'temporal']);
   });
 });
 

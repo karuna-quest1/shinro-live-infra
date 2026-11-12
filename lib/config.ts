@@ -108,6 +108,17 @@ export const IDENTITY = {
   fromName: 'Shinro',
   /** oauth2-proxy cookie and refresh token lifetime (PLAN 1.8). */
   sessionHours: 8,
+  /**
+   * Quest1 staff: real migrations as well as the demo. The app maps this exact
+   * (lowercase) group name to Role.DEVELOPER itself, in core/rbac.py's
+   * DEFAULT_GROUP_ROLE_MAPPING, so the name is a contract with the app repo.
+   *
+   * Never granted from a demo request: Role.DEVELOPER can create real
+   * conversations and read and write secrets (onboarding runbook, PLAN 1.8).
+   * It does NOT open the consoles on its own; oauth2-proxy gates those on the
+   * stream group, so staff need this group AND the stream's.
+   */
+  staffGroup: 'developer',
 } as const;
 
 /**
@@ -230,6 +241,11 @@ export function parseStreams(raw: unknown): StreamConfig[] {
     }
     if (names.has(name)) {
       throw new Error(`${where}: duplicate stream name "${name}"`);
+    }
+    // A stream of this name would create a second group with the same
+    // GroupName as the staff group, and the deploy would fail.
+    if (name === IDENTITY.staffGroup) {
+      throw new Error(`${where}: "${name}" is reserved for the staff group`);
     }
     names.add(name);
 

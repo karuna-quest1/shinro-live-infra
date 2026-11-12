@@ -98,6 +98,14 @@ export class IdentityStack extends cdk.Stack {
       managedLoginVersion: cognito.ManagedLoginVersion.NEWER_MANAGED_LOGIN,
     });
 
+    // ---- Quest1 staff: both real and demo migrations ----
+    // Not per stream, and not handed out from a demo request (IDENTITY.staffGroup).
+    new cognito.UserPoolGroup(this, 'GroupStaff', {
+      userPool: this.pool,
+      groupName: IDENTITY.staffGroup,
+      description: 'Quest1 staff: real migrations as well as the demo (app Role.DEVELOPER)',
+    });
+
     // ---- Per stream: a group, an app client, a cookie secret ----
     const streamParams: Record<string, string> = {};
     for (const stream of streams) {
