@@ -119,7 +119,7 @@
     "@aws-cdk/custom-resources:logApiResponseDataPropertyTrueDefault": false,
     "@aws-cdk/customresources:installLatestAwsSdkDefault": false,
     "@aws-cdk/s3-notifications:addS3TrustKeyPolicyForSnsSubscriptions": true,
-    "shinro:sesDomainVerified": false,
+    "shinro:sesDomainVerified": true,
     "shinro:alarmEmails": [
       "sharon.joe@quest1.io",
       "karunanidhi.ayyamperumal@quest1.io"
