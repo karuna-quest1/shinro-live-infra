@@ -194,7 +194,7 @@ export interface StreamConfig {
   readonly name: string;
   /** The stream's public page and app, e.g. temporal.shinro.ai. Served through CloudFront. */
   readonly subdomain: string;
-  /** Extra hostnames this stream's oauth2-proxy guards. A records straight to the Shinro EC2. */
+  /** Extra hostnames this stream's oauth2-proxy guards. Served through the console distribution (EdgeStack). */
   readonly consoles: readonly string[];
 }
 

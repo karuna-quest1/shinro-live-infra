@@ -40,14 +40,18 @@ export const HOST_TO_FOLDER = `function handler(event) {
  *   /assets/*    -> the Shinro EC2, cached, keyed by host (each stream has its own UI build)
  *   app paths    -> the Shinro EC2, never cached, everything forwarded, WebSockets
  *
- * The two demo consoles don't come through here: they're A records straight to
- * the Shinro EC2 (decision 4.4).
+ * The demo consoles (every stream's `consoles`) get a second distribution of
+ * their own, because behaviours match on path, not host: on this one their `/`
+ * would land on the S3 site. Same certificate, same origin and origin secret;
+ * nginx serves them on :80 like the app paths.
  *
  * shinro.ai's DNS is at Cloudflare: no Route 53 here. The stack prints the
  * CNAME to add per stream. The certificate is the existing one.
  */
 export class EdgeStack extends cdk.Stack {
   readonly distribution: cloudfront.Distribution;
+  /** The demo consoles; absent when no stream has any. */
+  readonly consoleDistribution?: cloudfront.Distribution;
 
   constructor(scope: Construct, id: string, props: EdgeStackProps) {
     super(scope, id, props);
@@ -139,16 +143,42 @@ export class EdgeStack extends cdk.Stack {
       },
     });
 
+    // ---- The demo consoles: everything to the Shinro EC2, never cached ----
+    const consoleHosts = streams.flatMap((s) => s.consoles);
+    if (consoleHosts.length > 0) {
+      this.consoleDistribution = new cloudfront.Distribution(this, 'ConsoleDistribution', {
+        comment: `${PREFIX}: demo consoles`,
+        domainNames: consoleHosts,
+        certificate: acm.Certificate.fromCertificateArn(this, 'ConsoleCertificate', EDGE.certificateArn),
+        minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
+        httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
+        priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
+        // No response-headers policy: Operate and the Temporal UI set their own.
+        defaultBehavior: app,
+      });
+    }
+
     // ---- Published, and what to add in Cloudflare ----
     new SsmParams(this, 'Params', 'edge', {
       'distribution-id': this.distribution.distributionId,
       'distribution-domain': this.distribution.distributionDomainName,
       'site-bucket': site.bucketName,
+      ...(this.consoleDistribution && {
+        'console-distribution-id': this.consoleDistribution.distributionId,
+        'console-distribution-domain': this.consoleDistribution.distributionDomainName,
+      }),
     });
     new cdk.CfnOutput(this, 'CloudflareRecords', {
       description: 'Add in Cloudflare: CNAME, DNS only (grey cloud)',
       value: cdk.Fn.join(', ', streams.map((s) => `${s.subdomain.split('.')[0]} -> ${this.distribution.distributionDomainName}`)),
     });
+    if (this.consoleDistribution) {
+      const domain = this.consoleDistribution.distributionDomainName;
+      new cdk.CfnOutput(this, 'CloudflareConsoleRecords', {
+        description: 'In Cloudflare, replace each console A record with this CNAME, DNS only (grey cloud)',
+        value: cdk.Fn.join(', ', consoleHosts.map((h) => `${h.split('.')[0]} -> ${domain}`)),
+      });
+    }
     new cdk.CfnOutput(this, 'SiteBucketName', { value: site.bucketName });
 
     for (const [id, reason] of [
@@ -157,7 +187,9 @@ export class EdgeStack extends cdk.Stack {
       ['AwsSolutions-CFR3', 'Access logs not kept for the demo; nginx logs every app request.'],
       ['AwsSolutions-CFR5', 'The origin is the Shinro EC2 on :80 inside AWS, locked to CloudFront by prefix list and origin secret.'],
     ]) {
-      cdk.Validations.of(this.distribution).acknowledge({ id: `AwsSolutions::${id}`, reason });
+      for (const d of [this.distribution, this.consoleDistribution]) {
+        if (d) cdk.Validations.of(d).acknowledge({ id: `AwsSolutions::${id}`, reason });
+      }
     }
   }
 }
