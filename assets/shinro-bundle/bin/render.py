@@ -210,6 +210,16 @@ for s in streams:
         "OAUTH2_PROXY_COOKIE_SECURE": "true",
         "OAUTH2_PROXY_COOKIE_EXPIRE": f"{cfg['sessionHours']}h",
         "OAUTH2_PROXY_COOKIE_REFRESH": "1h",
+        # The session lives in Redis; the cookie carries only a ticket.
+        # With the cookie store a Cognito session (id + access + refresh tokens)
+        # is over 4kb, so oauth2-proxy splits it across several Set-Cookie
+        # headers and re-emits them on the auth_request subrequest. nginx then
+        # refuses the oversized header block ("upstream sent too big header"),
+        # scores a valid 202 as 502, and answers 500 -- two requests in three
+        # on camunda-demo, intermittently on temporal-demo (2026-11-12).
+        # Its own database: db 0 belongs to the app.
+        "OAUTH2_PROXY_SESSION_STORE_TYPE": "redis",
+        "OAUTH2_PROXY_REDIS_CONNECTION_URL": "redis://redis:6379/2",
         "OAUTH2_PROXY_SCOPE": "openid email profile",
         "OAUTH2_PROXY_CODE_CHALLENGE_METHOD": "S256",
         "OAUTH2_PROXY_OIDC_GROUPS_CLAIM": "cognito:groups",
@@ -226,6 +236,8 @@ for s in streams:
         "container_name": f"oauth2-proxy-{name}",
         "env_file": [f"./run/oauth2-{name}.env"],
         "restart": "unless-stopped",
+        # It keeps its sessions there, so it must not start first.
+        "depends_on": {"redis": {"condition": "service_healthy"}},
         "networks": ["shinro"],
         "logging": {"driver": "awslogs", "options": {
             "awslogs-region": region, "awslogs-create-group": "false",
@@ -326,6 +338,17 @@ server {{
 write(NGINX / "10-app.conf", app_conf, mode=0o640)
 
 
+# nginx's default is a single 4k buffer for an upstream's response headers,
+# which is less than a Set-Cookie block carrying OIDC tokens. Too small and
+# nginx discards the response: on an auth_request subrequest that reads as 502,
+# which auth_request has no handler for, so the user gets 500. Sessions live in
+# Redis now, but the headroom stays -- a 500 is the worst way to learn this.
+AUTH_BUFFERS = """
+    proxy_buffer_size 16k;
+    proxy_buffers 4 16k;
+    proxy_busy_buffers_size 32k;"""
+
+
 def oauth2_blocks(proxy):
     return f"""
   # Variables, so nginx starts even before the proxy container is up.
@@ -336,7 +359,7 @@ def oauth2_blocks(proxy):
     proxy_set_header X-Real-IP               $remote_addr;
     proxy_set_header X-Forwarded-Proto       https;
     proxy_set_header X-Forwarded-Host        $host;
-    proxy_set_header X-Auth-Request-Redirect $request_uri;
+    proxy_set_header X-Auth-Request-Redirect $request_uri;{AUTH_BUFFERS}
   }}
   location = /oauth2/auth {{
     internal;
@@ -346,7 +369,7 @@ def oauth2_blocks(proxy):
     proxy_set_header Content-Length    "";
     proxy_set_header Host              $host;
     proxy_set_header X-Forwarded-Proto https;
-    proxy_set_header X-Forwarded-Uri   $request_uri;
+    proxy_set_header X-Forwarded-Uri   $request_uri;{AUTH_BUFFERS}
   }}
   location @signin {{ return 302 https://$host/oauth2/start?rd=$request_uri; }}"""
 
@@ -379,6 +402,20 @@ server {{{tls(host)}
     auth_request /oauth2/auth;
     error_page 401 = @signin;
     return 302 /operate;
+  }}
+  # Camunda runs Spring Security, which starts its OWN Keycloak login at
+  # /oauth2/authorization/oidc. That sits under oauth2-proxy's /oauth2/ prefix,
+  # so without this block nginx hands it to the proxy, which answers
+  # 202 "Authenticated" and Operate's login never begins -- a blank page with
+  # one word on it. nginx picks the longest matching prefix, so this wins here
+  # while /oauth2/start, /oauth2/callback and /oauth2/auth still reach the proxy.
+  # Fixed by hand on the host 2026-11-11 and lost to update.sh the next morning;
+  # it belongs here, where it survives.
+  location /oauth2/authorization/ {{
+    auth_request /oauth2/auth;
+    error_page 401 = @signin;
+    set $cam {camunda_ip}:8080;
+    proxy_pass http://$cam$request_uri;{PROXY_HEADERS}
   }}
   location /auth/ {{
     auth_request /oauth2/auth;

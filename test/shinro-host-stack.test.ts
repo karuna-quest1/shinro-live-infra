@@ -211,6 +211,34 @@ describe('render.py (with a fake AWS CLI)', () => {
     });
   });
 
+  test('oauth2-proxy sessions live in Redis, or a refreshed session answers 500', () => {
+    expect(env('oauth2-temporal.env')).toMatchObject({
+      OAUTH2_PROXY_SESSION_STORE_TYPE: 'redis',
+      // Its own database: db 0 belongs to the app.
+      OAUTH2_PROXY_REDIS_CONNECTION_URL: 'redis://redis:6379/2',
+    });
+    // It cannot come up before the store it keeps sessions in.
+    const compose = JSON.parse(run('compose.streams.yaml'));
+    expect(compose.services['oauth2-proxy-temporal'].depends_on).toEqual({
+      redis: { condition: 'service_healthy' },
+    });
+  });
+
+  test('both oauth2 locations have header room, or an oversized Set-Cookie is a 500', () => {
+    const consoles = run('nginx/20-consoles.conf');
+    // One pair per console host: /oauth2/ and the internal /oauth2/auth.
+    expect(consoles.match(/proxy_buffer_size 16k;/g)).toHaveLength(4);
+    expect(consoles).toContain('proxy_busy_buffers_size 32k;');
+  });
+
+  test("Camunda's own login path outranks the oauth2-proxy prefix, or Operate shows only '202 Authenticated'", () => {
+    const consoles = run('nginx/20-consoles.conf');
+    // Longer prefix than /oauth2/, so nginx picks it; the proxy keeps its own endpoints.
+    expect(consoles).toContain('location /oauth2/authorization/ {');
+    const camundaLogin = consoles.slice(consoles.indexOf('location /oauth2/authorization/ {'));
+    expect(camundaLogin).toContain('set $cam 10.60.20.5:8080;');
+  });
+
   test('nginx: origin check, docs hidden, identity headers stripped, consoles present', () => {
     const app = run('nginx/10-app.conf');
     expect(app).toContain('if ($origin_ok = 0) { return 403; }');
