@@ -202,16 +202,18 @@ export class ObservabilityStack extends cdk.Stack {
     });
 
     // ---- CloudFront (stream pages and app) ----
-    const distributionId = ssm.StringParameter.valueForStringParameter(this, ssmName('edge', 'distribution-id'));
-    const cf = (metricName: string, statistic: string) =>
+    const cf = (distributionParam: string, metricName: string, statistic: string) =>
       new cloudwatch.Metric({
         namespace: 'AWS/CloudFront',
         metricName,
-        dimensionsMap: { DistributionId: distributionId, Region: 'Global' },
+        dimensionsMap: {
+          DistributionId: ssm.StringParameter.valueForStringParameter(this, ssmName('edge', distributionParam)),
+          Region: 'Global',
+        },
         period: fiveMin,
         statistic,
       });
-    const errors5xx = cf('5xxErrorRate', 'Average');
+    const errors5xx = cf('distribution-id', '5xxErrorRate', 'Average');
     alarm('cloudfront-5xx', errors5xx, {
       alarmDescription: 'More than 10% of requests to the stream pages failed with a 5xx for 15 minutes (often: Shinro EC2 or nginx down).',
       threshold: 10,
@@ -219,6 +221,19 @@ export class ObservabilityStack extends cdk.Stack {
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
+
+    // ---- CloudFront (demo consoles); only EdgeStack's console distribution publishes the id ----
+    if (props.config.streams.some((s) => s.consoles.length > 0)) {
+      alarm('cloudfront-consoles-5xx', cf('console-distribution-id', '5xxErrorRate', 'Average'), {
+        alarmDescription:
+          'More than 10% of console requests (Camunda Operate, Temporal UI) failed with a 5xx for 15 minutes ' +
+          '(often: Shinro EC2, nginx or oauth2-proxy down, or a request slower than the 60 s origin timeout).',
+        threshold: 10,
+        evaluationPeriods: 3,
+        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+    }
 
     // ---- Wrong-group logins (gotcha 5.18): oauth2-proxy 403s per stream ----
     for (const stream of props.config.streams) {
@@ -298,7 +313,7 @@ export class ObservabilityStack extends cdk.Stack {
         [new cloudwatch.AlarmStatusWidget({ title: 'Alarms', alarms, width: 24, height: 4 })],
         dashboardHostWidgets.slice(0, 2).concat(dashboardHostWidgets.slice(2, 4)),
         [
-          new cloudwatch.GraphWidget({ title: 'CloudFront requests', left: [cf('Requests', 'Sum')], width: 8 }),
+          new cloudwatch.GraphWidget({ title: 'CloudFront requests', left: [cf('distribution-id', 'Requests', 'Sum')], width: 8 }),
           new cloudwatch.GraphWidget({ title: 'CloudFront 5xx %', left: [errors5xx], width: 8 }),
           new cloudwatch.SingleValueWidget({ title: 'Certificate days left', metrics: [certDays], width: 8 }),
         ],

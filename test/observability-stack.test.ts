@@ -74,3 +74,29 @@ test.each(['camunda-bundle', 'shinro-bundle'])('%s reports UnhealthyContainers e
   expect(fs.readFileSync(path.join(dir, 'health.sh'), 'utf8')).toContain('--metric-name UnhealthyContainers');
   expect(fs.readFileSync(path.join(dir, 'bootstrap.sh'), 'utf8')).toMatch(/OnUnitActiveSec=5min[\s\S]*health\.timer/);
 });
+
+describe('console distribution', () => {
+  const withConsoles = Template.fromStack(
+    new ObservabilityStack(new cdk.App(), 'ObsConsoles', {
+      env: { account: '111111111111', region: 'us-east-1' },
+      config: {
+        streams: parseStreams([{ name: 'temporal', subdomain: 'temporal.shinro.ai', consoles: ['camunda-demo.shinro.ai'] }]),
+        sesDomainVerified: false,
+      },
+      alarmEmails: ['oncall@example.com'],
+    }),
+  );
+
+  test('5xx alarms like the app one, on the console distribution read from SSM', () => {
+    const alarm = Object.values(withConsoles.findResources('AWS::CloudWatch::Alarm'))
+      .map((r) => r.Properties)
+      .find((a) => a.AlarmName === 'shinro-live-cloudfront-consoles-5xx');
+    expect(alarm).toMatchObject({ MetricName: '5xxErrorRate', Threshold: 10, EvaluationPeriods: 3 });
+    expect(JSON.stringify(withConsoles.toJSON().Parameters)).toContain('/shinro/live/edge/console-distribution-id');
+  });
+
+  test('no consoles: no console alarm and no lookup of a parameter that does not exist', () => {
+    expect(byName('cloudfront-consoles-5xx')).toBeUndefined();
+    expect(JSON.stringify(template.toJSON())).not.toContain('console-distribution-id');
+  });
+});
