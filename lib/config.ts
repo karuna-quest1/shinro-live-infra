@@ -15,7 +15,7 @@ export const DOMAIN = 'shinro.ai';
 export const CAMUNDA_PUBLIC_HOST = `camunda-demo.${DOMAIN}`;
 
 /** Each user's own Temporal UI, routed by who is logged in (decision 4.6). Owned by the temporal stream. */
-export const TEMPORAL_UI_PUBLIC_HOST = `demo-temporal-ui.${DOMAIN}`;
+export const TEMPORAL_UI_PUBLIC_HOST = `temporal-demo.${DOMAIN}`;
 
 /** Prefix for stack ids, resource names, ECR repos and log groups. `live`, never `demo` (PLAN 5.13). */
 export const PREFIX = 'shinro-live';

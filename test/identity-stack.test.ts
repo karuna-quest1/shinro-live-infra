@@ -7,7 +7,7 @@ const env = { account: '111111111111', region: 'us-east-1' };
 const temporal = {
   name: 'temporal',
   subdomain: 'temporal.shinro.ai',
-  consoles: ['camunda-demo.shinro.ai', 'demo-temporal-ui.shinro.ai'],
+  consoles: ['camunda-demo.shinro.ai', 'temporal-demo.shinro.ai'],
 };
 
 function synth(config: Partial<LiveConfig> = {}): Template {
@@ -85,7 +85,7 @@ describe('per stream', () => {
       CallbackURLs: [
         'https://temporal.shinro.ai/oauth2/callback',
         'https://camunda-demo.shinro.ai/oauth2/callback',
-        'https://demo-temporal-ui.shinro.ai/oauth2/callback',
+        'https://temporal-demo.shinro.ai/oauth2/callback',
       ],
     });
   });

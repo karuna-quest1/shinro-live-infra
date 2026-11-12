@@ -124,6 +124,14 @@ api_env = {
     # Its own default is redis://redis-stack:6379/0 and ignores REDIS_HOST.
     "SEMANTIC_CACHE_REDIS_URL": "redis://redis:6379/0",
     "AWS_REGION": region,
+    # Master password for everything the API encrypts into Redis (Camunda
+    # configs, LLM credentials). Without it the API disables encryption and
+    # every save returns 503. Never regenerate it: existing records are
+    # encrypted with this value and nothing else can read them.
+    "AUTH_SECRET": secret("shinro-live/shinro/auth-secret"),
+    # Where reports and inventory files go. Without it the Camunda inventory
+    # tool fails before it runs: "S3 bucket not configured."
+    "DOC_BUCKET_NAME": cfg["docsBucket"],
     "FRONTEND_URL": f"https://{primary['subdomain']}",
     "COOKIE_SECURE": "true",
     "OAUTH_PROVIDER": "cognito",
@@ -177,6 +185,9 @@ write(RUN / "api.env", env_file(api_env))
 
 write(RUN / "tool-exec.env", env_file({
     "REDIS_HOST": "redis", "REDIS_PORT": "6379", "AWS_REGION": region,
+    # The inventory tool uploads the report here. It also arrives as a stream
+    # param from the API; this is the fallback its own code reads.
+    "DOC_BUCKET_NAME": cfg["docsBucket"],
     **json_secret("shinro-live/shinro/tool-exec-env"),
 }))
 

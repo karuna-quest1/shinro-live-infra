@@ -23,7 +23,7 @@
         "subdomain": "temporal.shinro.ai",
         "consoles": [
           "camunda-demo.shinro.ai",
-          "demo-temporal-ui.shinro.ai"
+          "temporal-demo.shinro.ai"
         ]
       }
     ],

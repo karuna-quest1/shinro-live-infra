@@ -66,7 +66,7 @@ flowchart LR
   "shinro:streams": [
     { "name": "temporal",
       "subdomain": "temporal.shinro.ai",
-      "consoles": ["camunda-demo.shinro.ai", "demo-temporal-ui.shinro.ai"] }
+      "consoles": ["camunda-demo.shinro.ai", "temporal-demo.shinro.ai"] }
   ]
   ```
 - [x] Create the layout: `lib/stacks/`, `lib/constructs/stream-identity.ts`, `assets/shinro-bundle/`, `assets/camunda-bundle/`, `k8s/session-template/`, `scripts/add-demo-user.sh`.
@@ -193,7 +193,7 @@ Earlier note: Bundle in `assets/camunda-bundle/` from `camunda-distributions@cd4
 
 ### Step 4: ShinroHostStack (T-12, T-18)
 
-**Decided 2026-11-10:** both consoles stay (`camunda-demo`, `demo-temporal-ui`); nginx proxies the UI from a private S3 bucket. Images pushed by hand at commit `c6ce73da` (scripts/push-images.sh).
+**Decided 2026-11-10:** both consoles stay (`camunda-demo`, `temporal-demo`); nginx proxies the UI from a private S3 bucket. Images pushed by hand at commit `c6ce73da` (scripts/push-images.sh).
 
 **Open with the backend team (found in the app at `c6ce73da`):**
 1. **The API does its own Cognito login** (`core/oauth/cognito.py`, callback `/v2/oauth/callback`). So the demo pool needs a second app client for the API, and oauth2-proxy guards only the two consoles, which have no login of their own. The API's `COGNITO_*` settings point at `shinro-live-demo`.
@@ -207,7 +207,7 @@ Earlier note: Bundle in `assets/shinro-bundle/`; `bin/render.py` renders every e
 
 **By hand, around the deploy:**
 - Secret `shinro-live/cloudflare/dns-api-token`: a Cloudflare token limited to Zone > DNS > Edit on shinro.ai. Until it exists the consoles use a self-signed certificate.
-- Cloudflare A records, DNS only: `camunda-demo` and `demo-temporal-ui` → `54.147.229.249`.
+- Cloudflare A records, DNS only: `camunda-demo` and `temporal-demo` → `54.147.229.249`.
 - Secrets `shinro-live/shinro/api-env` and `shinro-live/shinro/tool-exec-env`: the app team puts a JSON object of extra settings there (LLM keys and the rest).
 - Upload each stream's UI build to `s3://shinro-live-ui-<account>/<stream>/` (built with that stream's `VITE_API_URL`).
 
@@ -266,7 +266,7 @@ Both depend only on step 4 (EdgeStack needs the EIP; EKS needs the Shinro role f
 | default | S3 (host→folder CloudFront Function) | cached |
 
 - [x] Origin-secret header added by CloudFront.
-- [ ] Route 53: aliases `shinro.ai` and `*.shinro.ai` → CloudFront; **A records** `camunda-demo` and `demo-temporal-ui` → EIP.
+- [ ] Route 53: aliases `shinro.ai` and `*.shinro.ai` → CloudFront; **A records** `camunda-demo` and `temporal-demo` → EIP.
 
 **Check:**
 - `temporal.shinro.ai` serves the public page.
@@ -311,7 +311,7 @@ Earlier note: Kubernetes 1.36, `aws-eks-v2`, node groups (not Auto Mode). The Sh
 - [ ] *(app)* `k8s/session-template/`: namespace, ResourceQuota, LimitRange (including `ephemeral-storage`), default-deny NetworkPolicy, Temporal dev server + NodePort (8233, 7233), terminal container with a writable `emptyDir` and T-32 securityContext. The session controller creates these at runtime; **CDK doesn't.**
 
 **Check:**
-- Two users open the same `demo-temporal-ui.shinro.ai` and each see **their own** session.
+- Two users open the same `temporal-demo.shinro.ai` and each see **their own** session.
 - A hand-set `X-Auth-Request-Email` changes nothing (5.20).
 - After the TTL, the page shows "start a migration".
 - A session can't reach another session, the Kubernetes API or the metadata service.

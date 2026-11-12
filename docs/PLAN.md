@@ -11,7 +11,7 @@
 3. **Access is requested via a HubSpot form** on the stream page, then granted **by hand**. No self-sign-up, no sync job.
 4. **Passwordless** — Cognito email OTP. No passwords anywhere.
 5. **After login the user lands in the app** at `temporal.shinro.ai/chat/<convid>`.
-6. **`reference.shinro.ai` dropped** (T-35 deferred, 4.14). Demo Camunda is **shared** at `camunda-demo.shinro.ai`. Per-user Temporal sessions are served at **one hostname with no id in the URL**, `demo-temporal-ui.shinro.ai` (4.6).
+6. **`reference.shinro.ai` dropped** (T-35 deferred, 4.14). Demo Camunda is **shared** at `camunda-demo.shinro.ai`. Per-user Temporal sessions are served at **one hostname with no id in the URL**, `temporal-demo.shinro.ai` (4.6).
 7. **The CLI runs in the browser** — a terminal panel on the chat page, backed by a real shell in the user's sandbox. Adds a terminal container to the session pod, makes shinro-api a WebSocket relay, and needs Go-module egress, resolved by an in-VPC proxy (4.17).
 8. **Camunda keeps Keycloak as its IdP, no federation** (4.20). Cognito guards *our* edge; Keycloak is what Camunda validates tokens against. Local reference stack: `~/Playground/camunda-full`, **Camunda 8.8.32**, consolidated mode.
 
@@ -37,7 +37,7 @@
 | `temporal.shinro.ai` `/oauth2/*` | temporal | login machinery | CloudFront → nginx → oauth2-proxy-temporal |
 | `temporal.shinro.ai` `/assets/*`, `/login`, `/settings` | temporal | mixed | CloudFront → nginx (built UI's static files) |
 | `camunda-demo.shinro.ai` | temporal | **logged in** | A record → nginx → Camunda private IP |
-| `demo-temporal-ui.shinro.ai` | temporal | **logged in** | A record → nginx → *the logged-in user's* NodePort |
+| `temporal-demo.shinro.ai` | temporal | **logged in** | A record → nginx → *the logged-in user's* NodePort |
 | `<next>.shinro.ai` | next | mixed | same pattern, loop-driven |
 | ~~`reference.shinro.ai`~~ | — | — | dropped (T-35 deferred) |
 
@@ -82,10 +82,10 @@ Two routing styles, deliberately (4.4): **mixed public+app hostnames → CloudFr
 3. **Analyse and generate:** `migrate-agent` runs in the user's terminal container, calling back into shinro-api for sign-in and LLM turns. Writes the Temporal project to `~/chats/<id>/`.
 4. **Build and test** in the same container — Go 1.26, modules from the in-VPC proxy (4.17), own task queue per migration. Nothing built on the Shinro host, no image pushed (4.18).
 5. **Validate** — the tool connects from the Shinro EC2 to the session's Temporal gRPC (7233) via NodePort (T-45, T-48).
-6. **Link** the user to `https://demo-temporal-ui.shinro.ai` — same URL for everyone.
+6. **Link** the user to `https://temporal-demo.shinro.ai` — same URL for everyone.
 7. **Expire** at TTL (48 h): namespace and Redis entry deleted. No backups (T-33); generated code is lost (4.22).
 
-**2.7 Opening the Temporal session.** `demo-temporal-ui.shinro.ai` → A record → TLS at nginx → `auth_request` → oauth2-proxy gives `X-Auth-Request-Email` → second internal sub-request to shinro-api: *"where is jane@acme.com's session?"* → `X-Session-Upstream: 10.0.2.31:31234` → proxy there unchanged. UI sits at the root of both the address and the hostname, so **no prefix to strip or rewrite**. No session (not started, or expired) ⇒ static page *"Start a migration to see it here"* (T-18). Resolved per request, so nothing goes stale.
+**2.7 Opening the Temporal session.** `temporal-demo.shinro.ai` → A record → TLS at nginx → `auth_request` → oauth2-proxy gives `X-Auth-Request-Email` → second internal sub-request to shinro-api: *"where is jane@acme.com's session?"* → `X-Session-Upstream: 10.0.2.31:31234` → proxy there unchanged. UI sits at the root of both the address and the hostname, so **no prefix to strip or rewrite**. No session (not started, or expired) ⇒ static page *"Start a migration to see it here"* (T-18). Resolved per request, so nothing goes stale.
 
 **2.8 "Run in terminal".** `GET /v2/demo/session` for state, then `wss://…/v2/demo/terminal?conversation=<chat>` — under `/v2/*`, so CloudFront (uncached) → nginx → shinro-api, **no new hostname or behaviour**. API checks the oauth2-proxy cookie *and* `Origin`, confirms the user owns this chat and has a live sandbox, mints a **CLI token** (scope `demo-cli`, ≤2 h, never outliving the sandbox) stored in Redis under a **one-time code** (60 s), then connects to **ttyd** in the pod passing the *code*, never the token. In-pod `terminal-shell` swaps code→token, CLI authenticates, **tmux** attaches to `~/chats/<id>/demo-app`. Panel waits for `shinro ❯` + 400 ms quiet before typing. Closing the panel kills nothing; reopening reattaches. Per chat: own tmux session and folder, **5 retained, LRU evicted**.
 
@@ -125,7 +125,7 @@ scripts/add-demo-user.sh              # <stream> <email>
 "shinro:streams": [
   { "name": "temporal",
     "subdomain": "temporal.shinro.ai",
-    "consoles": ["camunda-demo.shinro.ai", "demo-temporal-ui.shinro.ai"] }
+    "consoles": ["camunda-demo.shinro.ai", "temporal-demo.shinro.ai"] }
 ]
 ```
 
@@ -177,7 +177,7 @@ scripts/add-demo-user.sh              # <stream> <email>
 | 80 | any | `/chat/*`, `/v2/*` | origin secret → `auth_request` → shinro-api |
 | 80 | any | `/assets/*`, `/login`, `/settings` | origin secret → built UI static files |
 | 443 | `camunda-demo` | all | `auth_request` (temporal proxy) → Camunda private IP (`/auth/*` → 18080) |
-| 443 | `demo-temporal-ui` | all | `auth_request` → session lookup by email (4.7) → user's NodePort, else the "start a migration" page |
+| 443 | `temporal-demo` | all | `auth_request` → session lookup by email (4.7) → user's NodePort, else the "start a migration" page |
 | internal (e.g. 8000) | — | **CLI routes only** | for terminal pods; everything else 404 |
 
 Everywhere: strip-and-set `X-Auth-Request-*` (5.7); forward `Upgrade`/`Connection`; raise idle timeouts on `/v2/demo/terminal` (5.27). Role: read `/shinro/live/*` + named secrets, ECR pull, `eks:DescribeCluster`, plus an EKS Access Entry from Stack 7. **No `codebuild:StartBuild`** (4.18). Secrets: per-stream client + cookie secrets, LLM API keys.
@@ -225,7 +225,7 @@ Add-ons: `vpc-cni` with `enableNetworkPolicy: "true"`, `coredns`, `kube-proxy`, 
 Non-secret values in SSM under `/shinro/live/temporal/…`, secrets in Secrets Manager, rendered by `render-env.sh` at boot. **Never** put the Camunda client secret or LLM keys in `.env` files, images or the repo.
 
 - **UI (build-time, so built per stream):** `VITE_API_URL=https://temporal.shinro.ai/v2`, `VITE_WS_URL=wss://temporal.shinro.ai/v2`.
-- **API:** `FRONTEND_URL=https://temporal.shinro.ai`, `COOKIE_SECURE=true`; `DEMO_CAMUNDA_*` per the 2.9 table (Keycloak token URL, client `shinro-assessment` — **corrected** from DEPLOYMENT, which still described Cognito); `DEMO_TEMPORAL_ADDRESS=temporal:7233`, `DEMO_TEMPORAL_UI_URL=https://demo-temporal-ui.shinro.ai`, `DEMO_SESSION_TTL_HOURS=48`, `DEMO_SESSION_MAX_ACTIVE=20`.
+- **API:** `FRONTEND_URL=https://temporal.shinro.ai`, `COOKIE_SECURE=true`; `DEMO_CAMUNDA_*` per the 2.9 table (Keycloak token URL, client `shinro-assessment` — **corrected** from DEPLOYMENT, which still described Cognito); `DEMO_TEMPORAL_ADDRESS=temporal:7233`, `DEMO_TEMPORAL_UI_URL=https://temporal-demo.shinro.ai`, `DEMO_SESSION_TTL_HOURS=48`, `DEMO_SESSION_MAX_ACTIVE=20`.
 - Leave `DEMO_TERMINAL_UPSTREAM` unset (the controller supplies it). `<camunda-private-ip>` from SSM. `demo_catalog.yaml` switches `env:` secret refs to **`aws-sm:`**, so the Shinro role must read those named secrets.
 
 ## 3.6 Releasing
@@ -264,7 +264,7 @@ Non-secret values in SSM under `/shinro/live/temporal/…`, secrets in Secrets M
 
 **4.5 TLS on the Shinro EC2.** **certbot + `certbot-dns-route53`** (DNS-01; instance role may edit the zone; free, auto-renews). Get a **wildcard** so new console hostnames need no cert change. Alternatives: ACM exportable certs (paid, check renewal); an ALB (costs more, conflicts with T-18). **Alarm on expiry** either way — it takes both consoles down at once.
 
-**4.6 One hostname per session, routed by identity — resolved.** `demo-temporal-ui.shinro.ai`, no id, no path; nginx picks the session from the logged-in email. Namespace is still per-user and still deleted at 48 h — only the URL changed. Beats `…/<id>` because: the path-prefix problem vanishes (no public-path setting, no `sub_filter`); there is no link to leak; T-29/T-30 say a user has only one session; and it is what **T-18** already described. Costs: no linkable session for support — use `kubectl`. Rejected: subdomain per session (needs wildcard DNS, puts the id back). Internal ids remain for namespace and Redis key.
+**4.6 One hostname per session, routed by identity — resolved.** `temporal-demo.shinro.ai`, no id, no path; nginx picks the session from the logged-in email. Namespace is still per-user and still deleted at 48 h — only the URL changed. Beats `…/<id>` because: the path-prefix problem vanishes (no public-path setting, no `sub_filter`); there is no link to leak; T-29/T-30 say a user has only one session; and it is what **T-18** already described. Costs: no linkable session for support — use `kubectl`. Rejected: subdomain per session (needs wildcard DNS, puts the id back). Internal ids remain for namespace and Redis key.
 
 **4.7 Finding a user's session — resolved.** shinro-api answers per request, keyed by email, from Redis. Not T-29's map file + `nginx -s reload`: that needs the Docker socket in the API container (root-equivalent, beside tool-exec) and goes stale. **nginx nuance:** only one `auth_request` per `location`, and two questions are needed. Either the internal-jump idiom (`error_page 418 = @session; return 418;` with a second `auth_request` in the named location) or **njs**. Cost: one internal request per page load.
 

@@ -28,7 +28,7 @@ Every record **DNS only** (grey cloud). Type only the short name; Cloudflare add
 |---|---|---|---|---|---|
 | ☐ | CNAME | `temporal` | `d2rv7boj8gwvuc.cloudfront.net` | DNS only | The stream page and app (CloudFront) |
 | ☐ | A | `camunda-demo` | `54.147.229.249` | DNS only | Camunda console (Shinro EC2) |
-| ☐ | A | `demo-temporal-ui` | `54.147.229.249` | DNS only | Temporal console (Shinro EC2) |
+| ☐ | A | `temporal-demo` | `54.147.229.249` | DNS only | Temporal console (Shinro EC2) |
 | ☐ | CNAME | `gwht4p562hqmnm524nvozrz5swlkkw5j._domainkey` | `gwht4p562hqmnm524nvozrz5swlkkw5j.dkim.amazonses.com` | DNS only | Login-code emails (DKIM 1/3) |
 | ☐ | CNAME | `yvvhgvszg5wkwgo6xpgd2qrrju5omqok._domainkey` | `yvvhgvszg5wkwgo6xpgd2qrrju5omqok.dkim.amazonses.com` | DNS only | Login-code emails (DKIM 2/3) |
 | ☐ | CNAME | `w5aniopsmpizplkvssmupngqd32g2l3n._domainkey` | `w5aniopsmpizplkvssmupngqd32g2l3n.dkim.amazonses.com` | DNS only | Login-code emails (DKIM 3/3) |

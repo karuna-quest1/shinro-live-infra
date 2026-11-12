@@ -5,7 +5,7 @@ import { parseStreams, streamHosts, STREAMS_CONTEXT_KEY } from '../lib/config';
 const temporal = {
   name: 'temporal',
   subdomain: 'temporal.shinro.ai',
-  consoles: ['camunda-demo.shinro.ai', 'demo-temporal-ui.shinro.ai'],
+  consoles: ['camunda-demo.shinro.ai', 'temporal-demo.shinro.ai'],
 };
 
 describe('parseStreams', () => {
@@ -40,7 +40,7 @@ describe('parseStreams', () => {
   });
 
   test('rejects a hostname shared by two streams (rule 4.1)', () => {
-    const other = { name: 'next', subdomain: 'next.shinro.ai', consoles: ['demo-temporal-ui.shinro.ai'] };
+    const other = { name: 'next', subdomain: 'next.shinro.ai', consoles: ['temporal-demo.shinro.ai'] };
     expect(() => parseStreams([temporal, other])).toThrow(/already belongs to stream "temporal"/);
   });
 });
@@ -49,6 +49,6 @@ test('streamHosts lists the subdomain and every console (callback URLs, 5.23)', 
   expect(streamHosts(temporal)).toEqual([
     'temporal.shinro.ai',
     'camunda-demo.shinro.ai',
-    'demo-temporal-ui.shinro.ai',
+    'temporal-demo.shinro.ai',
   ]);
 });

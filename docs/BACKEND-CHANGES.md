@@ -70,7 +70,7 @@ No change needed; just don't break them, or the cluster refuses the request:
 - The Shinro EC2 already sets `COGNITO_USER_POOL_ID`, `COGNITO_CLIENT_ID`, `COGNITO_CLIENT_SECRET` and `COGNITO_DOMAIN` for the new demo pool `shinro-live-demo`, with callback `https://temporal.shinro.ai/v2/oauth/callback`. Please confirm that's all the API needs.
 - The pool has one Cognito **group per stream**, named after it: `temporal`. The API only maps `demo-users` to the Demo role. Please map `temporal` (and future stream groups) to Demo as well.
 
-## 5. Temporal UI lookup (for `demo-temporal-ui.shinro.ai`)
+## 5. Temporal UI lookup (for `temporal-demo.shinro.ai`)
 
 Each user must see **their own** Temporal UI. nginx on the Shinro EC2 asks the API which one:
 

@@ -41,6 +41,14 @@ export const SHINRO_SECRET_NAMES = {
   temporalUiRouteSecret: `${PREFIX}/shinro/temporal-ui-route-secret`,
   /** By hand: Cloudflare token, Zone > DNS > Edit on shinro.ai only. */
   cloudflareToken: `${PREFIX}/cloudflare/dns-api-token`,
+  /**
+   * The API's master password for encrypting stored secrets (AUTH_SECRET):
+   * Camunda configs, LLM provider credentials. Pre-existing and deliberately
+   * NOT created here -- CloudFormation would generate a new value and every
+   * record already encrypted with the old one would be unreadable for good.
+   * Read by name only (the role's shinro-live/shinro/* grant covers it).
+   */
+  authSecret: `${PREFIX}/shinro/auth-secret`,
 } as const;
 
 export interface ShinroHostStackProps extends cdk.StackProps {
@@ -62,6 +70,7 @@ export interface ShinroHostStackProps extends cdk.StackProps {
 export class ShinroHostStack extends cdk.Stack {
   readonly instance: ec2.Instance;
   readonly uiBucket: s3.Bucket;
+  readonly docsBucket: s3.Bucket;
 
   constructor(scope: Construct, id: string, props: ShinroHostStackProps) {
     super(scope, id, props);
@@ -101,6 +110,24 @@ export class ShinroHostStack extends cdk.Stack {
     cdk.Validations.of(this.uiBucket).acknowledge({
       id: 'AwsSolutions::AwsSolutions-S1',
       reason: 'Static UI files read by nginx only; nginx logs every request already.',
+    });
+
+    // ---- Reports and inventory files ----
+    // The Camunda inventory tool refuses to run without somewhere to put the
+    // report (tools/tool_execution/tools/camunda_inventory_fetcher.py); the API
+    // and tool-exec both read it as DOC_BUCKET_NAME. Never public, and never
+    // served to a browser: the API streams objects back itself.
+    this.docsBucket = new s3.Bucket(this, 'DocsBucket', {
+      bucketName: `${PREFIX}-docs-${this.account}`,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+      versioned: true,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+    cdk.Validations.of(this.docsBucket).acknowledge({
+      id: 'AwsSolutions::AwsSolutions-S1',
+      reason: 'Reports written and read by the instance role only; the API logs each access.',
     });
 
     // ---- Secrets ----
@@ -157,6 +184,7 @@ export class ShinroHostStack extends cdk.Stack {
         registry,
         domain: DOMAIN,
         uiBucketHost: `${this.uiBucket.bucketName}.s3.${this.region}.amazonaws.com`,
+        docsBucket: this.docsBucket.bucketName,
         camundaHost: CAMUNDA_PUBLIC_HOST,
         temporalUiHost: TEMPORAL_UI_PUBLIC_HOST,
         sessionTtlHours: SESSIONS.ttlHours,
@@ -192,6 +220,9 @@ export class ShinroHostStack extends cdk.Stack {
       ],
     });
     bundle.grantRead(role);
+    // shinro-api and tool-exec both run under this role; tool-exec uploads the
+    // inventory report and the API streams reports back to the browser.
+    this.docsBucket.grantReadWrite(role);
     const arn = (service: string, resource: string, region = this.region) =>
       `arn:aws:${service}:${region}:${this.account}:${resource}`;
     const statements: [string[], string[]][] = [
@@ -274,12 +305,16 @@ export class ShinroHostStack extends cdk.Stack {
     new ssm.StringParameter(this, 'InstanceIdParam', { parameterName: ssmName('shinro', 'instance-id'), stringValue: this.instance.instanceId });
     new cdk.CfnOutput(this, 'InstanceId', { value: this.instance.instanceId });
     new cdk.CfnOutput(this, 'UiBucketName', { value: this.uiBucket.bucketName });
+    new cdk.CfnOutput(this, 'DocsBucketName', { value: this.docsBucket.bucketName });
     new cdk.CfnOutput(this, 'CloudflareRecords', {
       description: 'Add in Cloudflare: A records, DNS only (grey cloud)',
       value: streams.flatMap((s) => s.consoles).map((h) => `${h} -> 54.147.229.249`).join(', '),
     });
 
     // ---- Accepted findings, each with its reason ----
+    // cdk-nag names the bucket by its logical id, which CDK hashes; read it
+    // from the construct so renaming DocsBucket can't silently un-suppress.
+    const docsBucketLogicalRef = this.getLogicalId(this.docsBucket.node.defaultChild as cdk.CfnElement);
     const accepted: [IConstruct, string, string][] = [
       [this.instance, 'AwsSolutions-EC28', 'Basic monitoring plus the CloudWatch agent is enough for a demo host.'],
       [this.instance, 'AwsSolutions-EC29', 'Termination protection would block replacements CloudFormation needs.'],
@@ -298,6 +333,9 @@ export class ShinroHostStack extends cdk.Stack {
       [role, `AwsSolutions-IAM5[Resource::${arn('ecr', `repository/${PREFIX}-*`)}]`, 'Pull only, from the shinro-live-* repositories.'],
       [role, 'AwsSolutions-IAM5[Resource::*]', 'ecr:GetAuthorizationToken has no resource-level scoping.'],
       [role, `AwsSolutions-IAM5[Resource::${arn('logs', `log-group:/${PREFIX}/shinro/*`)}]`, 'Only its own log groups.'],
+      ...['Action::s3:Abort*', 'Action::s3:DeleteObject*', `Resource::<${docsBucketLogicalRef}.Arn>/*`].map(
+        (f): [IConstruct, string, string] => [role, `AwsSolutions-IAM5[${f}]`, 'grantReadWrite on the reports bucket: object names are generated per conversation, and s3_repo.delete_prefix removes a conversation\'s files.'],
+      ),
       [this, 'Annotation::@aws-cdk/aws-ec2:noSubnetRouteTableId', 'The VPC is imported from SSM; nothing here reads route tables.'],
       [this, 'CloudFormation-Validate::W2001', 'fromVpcAttributes needs these ids; the instance uses the subnet and security groups.'],
     ];

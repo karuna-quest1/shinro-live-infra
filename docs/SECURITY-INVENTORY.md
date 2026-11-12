@@ -265,7 +265,7 @@ App images are pinned by digest from `/shinro/live/release/*`; support images by
 | Entry | Front | Protection |
 |---|---|---|
 | `temporal.shinro.ai` | **CloudFront** `d2rv7boj8gwvuc.cloudfront.net` (distribution `E3NJMULE8YXV3P`) | TLS 1.2+ (`TLSv1.2_2021`), HTTP→HTTPS, existing ACM cert `shinro.ai` + `*.shinro.ai`; default → private S3 (OAC); app paths → Shinro EC2 :80 with origin secret (`X-Shinro-Origin`, from Secrets Manager); app paths never cached; security response headers on static paths |
-| `camunda-demo.shinro.ai`, `demo-temporal-ui.shinro.ai` | **nginx** on the Shinro EC2 :443 | oauth2-proxy (Cognito, stream group); TLS from Let's Encrypt via Cloudflare DNS-01 (self-signed until the token exists); identity headers stripped from clients; Temporal UI routed only to VPC NodePorts |
+| `camunda-demo.shinro.ai`, `temporal-demo.shinro.ai` | **nginx** on the Shinro EC2 :443 | oauth2-proxy (Cognito, stream group); TLS from Let's Encrypt via Cloudflare DNS-01 (self-signed until the token exists); identity headers stripped from clients; Temporal UI routed only to VPC NodePorts |
 
 - nginx returns 404 for `/docs`, `/redoc`, `/openapi.json` and the internal Temporal-UI route; the API also disables them.
 - **WAF: none** (F6). No geo restriction, no rate limiting. CloudFront access logs off.

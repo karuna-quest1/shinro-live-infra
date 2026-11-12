@@ -8,7 +8,7 @@ import { INITIAL_RELEASE, parseStreams } from '../lib/config';
 import { SHINRO_BUNDLE_DIR, ShinroHostStack } from '../lib/stacks/shinro-host-stack';
 
 const streams = parseStreams([
-  { name: 'temporal', subdomain: 'temporal.shinro.ai', consoles: ['camunda-demo.shinro.ai', 'demo-temporal-ui.shinro.ai'] },
+  { name: 'temporal', subdomain: 'temporal.shinro.ai', consoles: ['camunda-demo.shinro.ai', 'temporal-demo.shinro.ai'] },
 ]);
 const app = new cdk.App();
 const stack = new ShinroHostStack(app, 'Shinro', {
@@ -62,6 +62,40 @@ test('role can read only named secrets, never all of Secrets Manager', () => {
   expect(policy).not.toMatch(/"secretsmanager:\*"|"ssm:\*"|"ecr:\*"/);
 });
 
+describe('the reports bucket', () => {
+  test('private, encrypted, kept if the stack is deleted', () => {
+    template.hasResource('AWS::S3::Bucket', {
+      Properties: {
+        BucketName: 'shinro-live-docs-111111111111',
+        PublicAccessBlockConfiguration: {
+          BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true,
+        },
+      },
+      DeletionPolicy: 'Retain',
+    });
+  });
+
+  test('no bucket policy opens it up the way the UI bucket is opened to the VPC', () => {
+    const docs = Object.entries(resources).find(([, r]) => r.Properties?.BucketName === 'shinro-live-docs-111111111111')![0];
+    const policies = ofType('AWS::S3::BucketPolicy').filter((r) => JSON.stringify(r.Properties.Bucket).includes(docs));
+    // enforceSSL adds a deny-insecure policy; there must be no Allow.
+    for (const p of policies) {
+      for (const st of p.Properties.PolicyDocument.Statement) expect(st.Effect).toBe('Deny');
+    }
+  });
+
+  test('the instance role can read and write it', () => {
+    const docs = Object.entries(resources).find(([, r]) => r.Properties?.BucketName === 'shinro-live-docs-111111111111')![0];
+    const statements = ofType('AWS::IAM::Policy')
+      .flatMap((r) => r.Properties.PolicyDocument.Statement as any[])
+      .filter((st) => JSON.stringify(st.Resource).includes(docs));
+    const actions = statements.flatMap((st) => (Array.isArray(st.Action) ? st.Action : [st.Action]));
+    for (const a of ['s3:GetObject', 's3:PutObject', 's3:DeleteObject*', 's3:Abort*']) {
+      expect(actions.some((x: string) => x === a || x === `${a}*`)).toBe(true);
+    }
+  });
+});
+
 describe('render.py (with a fake AWS CLI)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'render-'));
   const bundle = path.join(dir, 'bundle');
@@ -70,8 +104,16 @@ describe('render.py (with a fake AWS CLI)', () => {
 
   // The config parameter exactly as CloudFormation would store it.
   const configParam = ofType('AWS::SSM::Parameter').find((r) => r.Properties.Name === '/shinro/live/shinro/config')!;
+  // Two buckets are referenced now, so resolve each Ref to its own name
+  // rather than assuming every token is the UI bucket.
   const config = (configParam.Properties.Value['Fn::Join'][1] as unknown[])
-    .map((p) => (typeof p === 'string' ? p : 'shinro-live-ui-111111111111'))
+    .map((part) => {
+      if (typeof part === 'string') return part;
+      const ref = (part as { Ref?: string }).Ref;
+      const name = ref && resources[ref]?.Properties?.BucketName;
+      if (!name) throw new Error(`config has an unresolved token: ${JSON.stringify(part)}`);
+      return name as string;
+    })
     .join('');
   const state = {
     params: {
@@ -95,6 +137,7 @@ describe('render.py (with a fake AWS CLI)', () => {
       'shinro-live/shinro/api-env': '{"LLM_API_KEY":"k","FRONTEND_URL":"https://override.shinro.ai"}',
       'shinro-live/shinro/tool-exec-env': '{}',
       'shinro-live/shinro/temporal-ui-route-secret': 'r'.repeat(48),
+      'shinro-live/shinro/auth-secret': 'a'.repeat(44),
     },
   };
   const stateFile = path.join(dir, 'state.json');
@@ -110,6 +153,18 @@ describe('render.py (with a fake AWS CLI)', () => {
   });
   const run = (f: string) => fs.readFileSync(path.join(bundle, 'run', f), 'utf8');
   const env = (f: string) => Object.fromEntries(run(f).trim().split('\n').map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1)]));
+
+  test('the API gets AUTH_SECRET, or every encrypted save returns 503', () => {
+    // Without it redis_repo disables encryption: Camunda configs and LLM
+    // credentials cannot be stored. Regression, 2026-11-12.
+    expect(env('api.env').AUTH_SECRET).toBe('a'.repeat(44));
+  });
+
+  test('both env files name the reports bucket, or the inventory tool refuses to run', () => {
+    // camunda_inventory_fetcher.py returns "S3 bucket not configured." without it.
+    expect(env('api.env').DOC_BUCKET_NAME).toBe('shinro-live-docs-111111111111');
+    expect(env('tool-exec.env').DOC_BUCKET_NAME).toBe('shinro-live-docs-111111111111');
+  });
 
   test('app images by digest from the initial release', () => {
     expect(env('images.env').API_IMAGE).toBe(`111111111111.dkr.ecr.us-east-1.amazonaws.com/${INITIAL_RELEASE.images.api}`);
@@ -163,7 +218,7 @@ describe('render.py (with a fake AWS CLI)', () => {
     expect(app).toContain('proxy_set_header X-Auth-Request-Email "";');
     const consoles = run('nginx/20-consoles.conf');
     expect(consoles).toContain('server_name camunda-demo.shinro.ai;');
-    expect(consoles).toContain('server_name demo-temporal-ui.shinro.ai;');
+    expect(consoles).toContain('server_name temporal-demo.shinro.ai;');
     expect(consoles).toContain('set $kc 10.60.20.5:18080;');
     expect(consoles).toContain(`proxy_set_header X-Shinro-Route-Secret "${'r'.repeat(48)}";`);
     expect(consoles).toContain('"^/_temporal/(?<tip>10\\.60\\.[0-9]{1,3}\\.[0-9]{1,3})/');
