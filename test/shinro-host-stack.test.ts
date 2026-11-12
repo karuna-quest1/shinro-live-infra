@@ -226,8 +226,8 @@ describe('render.py (with a fake AWS CLI)', () => {
 
   test('both oauth2 locations have header room, or an oversized Set-Cookie is a 500', () => {
     const consoles = run('nginx/20-consoles.conf');
-    // One pair per console host: /oauth2/ and the internal /oauth2/auth.
-    expect(consoles.match(/proxy_buffer_size 16k;/g)).toHaveLength(4);
+    // One pair per console host and listener: /oauth2/ and the internal /oauth2/auth.
+    expect(consoles.match(/proxy_buffer_size 16k;/g)).toHaveLength(8);
     expect(consoles).toContain('proxy_busy_buffers_size 32k;');
   });
 
@@ -237,6 +237,31 @@ describe('render.py (with a fake AWS CLI)', () => {
     expect(consoles).toContain('location /oauth2/authorization/ {');
     const camundaLogin = consoles.slice(consoles.indexOf('location /oauth2/authorization/ {'));
     expect(camundaLogin).toContain('set $cam 10.60.20.5:8080;');
+  });
+
+  // The listen-80 server block for one console host, up to the next server block.
+  const httpBlock = (c: string, host: string) => {
+    const start = c.indexOf(`listen 80;\n  server_name ${host};`);
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = c.indexOf('\nserver {', start);
+    return c.slice(start, end === -1 ? undefined : end);
+  };
+
+  test('consoles are served on :80 for CloudFront, origin-checked', () => {
+    const c = run('nginx/20-consoles.conf');
+    for (const host of ['camunda-demo.shinro.ai', 'temporal-demo.shinro.ai']) {
+      expect(httpBlock(c, host)).toContain('if ($origin_ok = 0) { return 301 https://$host$request_uri; }');
+    }
+  });
+
+  test('console :80 blocks tell upstreams the viewer used https, and pass WebSocket upgrades', () => {
+    const http = httpBlock(run('nginx/20-consoles.conf'), 'camunda-demo.shinro.ai');
+    expect(http).toContain('proxy_set_header X-Forwarded-Proto https;');
+    expect(http).toContain('proxy_set_header Upgrade           $http_upgrade;');
+  });
+
+  test('no separate plain-HTTP redirect server for console hosts any more', () => {
+    expect(run('nginx/20-consoles.conf')).not.toContain('Plain HTTP on a console host goes to HTTPS');
   });
 
   test('nginx: origin check, docs hidden, identity headers stripped, consoles present', () => {
