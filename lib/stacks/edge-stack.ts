@@ -12,9 +12,6 @@ export interface EdgeStackProps extends cdk.StackProps {
   readonly config: LiveConfig;
 }
 
-/** Paths served by the Shinro EC2 and never cached (PLAN 1.11, gotcha 5.22). */
-export const APP_PATHS = ['/v2/*', '/chat', '/chat/*', '/login', '/settings'] as const;
-
 /**
  * Viewer-request function on the default (S3) behaviour only: each hostname
  * has its own folder, and a path without a file name gets index.html.
@@ -36,13 +33,16 @@ export const HOST_TO_FOLDER = `function handler(event) {
 /**
  * Step 5: the public front door (PLAN-v2 Stack 2), for every stream's hostname.
  *
- *   default      -> private S3 site bucket, one folder per hostname (the public page)
+ *   default      -> the Shinro EC2 (the app), never cached, everything forwarded, WebSockets
  *   /assets/*    -> the Shinro EC2, cached, keyed by host (each stream has its own UI build)
- *   app paths    -> the Shinro EC2, never cached, everything forwarded, WebSockets
+ *
+ * The app owns `/` and every page path: /, /auth/callback (where login returns),
+ * /settings/:tab, /chat/:id. A public landing page has no path yet (decided
+ * 2026-11-12); the site bucket and the host-to-folder function are kept for it,
+ * unrouted. Routing it later adds the S3 origin, its OAC and the bucket grant.
  *
  * The demo consoles (every stream's `consoles`) get a second distribution of
- * their own, because behaviours match on path, not host: on this one their `/`
- * would land on the S3 site. Same certificate, same origin and origin secret;
+ * their own, so their hostnames never share this one's routes. Same certificate, same origin and origin secret;
  * nginx serves them on :80 like the app paths.
  *
  * shinro.ai's DNS is at Cloudflare: no Route 53 here. The stack prints the
@@ -107,6 +107,14 @@ export class EdgeStack extends cdk.Stack {
       enableAcceptEncodingBrotli: true,
     });
 
+    // For the landing page, once it has a path: not attached to any behaviour yet.
+    new cloudfront.Function(this, 'HostToFolder', {
+      functionName: `${PREFIX}-host-to-folder`,
+      comment: 'Each hostname has its own folder in the site bucket',
+      runtime: cloudfront.FunctionRuntime.JS_2_0,
+      code: cloudfront.FunctionCode.fromInline(HOST_TO_FOLDER),
+    });
+
     this.distribution = new cloudfront.Distribution(this, 'Distribution', {
       comment: `${PREFIX}: stream pages and app`,
       domainNames: streams.map((s) => s.subdomain),
@@ -114,25 +122,8 @@ export class EdgeStack extends cdk.Stack {
       minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
       httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
       priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
-      defaultBehavior: {
-        origin: origins.S3BucketOrigin.withOriginAccessControl(site),
-        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-        cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
-        responseHeadersPolicy: cloudfront.ResponseHeadersPolicy.SECURITY_HEADERS,
-        functionAssociations: [
-          {
-            eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
-            function: new cloudfront.Function(this, 'HostToFolder', {
-              functionName: `${PREFIX}-host-to-folder`,
-              comment: 'Each hostname has its own folder in the site bucket',
-              runtime: cloudfront.FunctionRuntime.JS_2_0,
-              code: cloudfront.FunctionCode.fromInline(HOST_TO_FOLDER),
-            }),
-          },
-        ],
-      },
+      defaultBehavior: app,
       additionalBehaviors: {
-        ...Object.fromEntries(APP_PATHS.map((p) => [p, app])),
         '/assets/*': {
           origin: shinro,
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,

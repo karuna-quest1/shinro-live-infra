@@ -1,7 +1,7 @@
 import * as cdk from 'aws-cdk-lib/core';
 import { Template } from 'aws-cdk-lib/assertions';
 import { parseStreams } from '../lib/config';
-import { APP_PATHS, EdgeStack, HOST_TO_FOLDER } from '../lib/stacks/edge-stack';
+import { EdgeStack, HOST_TO_FOLDER } from '../lib/stacks/edge-stack';
 
 const streams = parseStreams([
   { name: 'temporal', subdomain: 'temporal.shinro.ai', consoles: ['camunda-demo.shinro.ai'] },
@@ -42,10 +42,18 @@ test('the origin secret is resolved at deploy, never written in the template', (
   ]);
 });
 
-test.each(APP_PATHS)('%s: never cached, everything forwarded (5.22)', (p) => {
-  expect(behaviour(p)).toMatchObject({ CachePolicyId: CACHING_DISABLED, OriginRequestPolicyId: ALL_VIEWER });
-  expect(behaviour(p).AllowedMethods).toHaveLength(7);
+test('default: the app on the EC2, never cached, everything forwarded (5.22)', () => {
+  // Everything but /assets/* is the app: /, /auth/callback (login return),
+  // /settings/:tab, /chat/:id ... would 403 from an empty landing bucket.
+  const ec2 = dist.Origins.find((o: any) => o.DomainName === 'ec2-54-147-229-249.compute-1.amazonaws.com');
+  expect(dist.DefaultCacheBehavior).toMatchObject({
+    TargetOriginId: ec2.Id, CachePolicyId: CACHING_DISABLED, OriginRequestPolicyId: ALL_VIEWER, Compress: false,
+  });
+  expect(dist.DefaultCacheBehavior.AllowedMethods).toHaveLength(7);
+  expect(dist.DefaultCacheBehavior.FunctionAssociations).toBeUndefined();
+  expect(dist.CacheBehaviors.map((b: any) => b.PathPattern)).toEqual(['/assets/*']);
 });
+
 
 test('/assets/* cached, keyed by host so streams never share a build', () => {
   template.hasResourceProperties('AWS::CloudFront::CachePolicy', {
@@ -54,9 +62,10 @@ test('/assets/* cached, keyed by host so streams never share a build', () => {
   expect(behaviour('/assets/*').CachePolicyId).not.toBe(CACHING_DISABLED);
 });
 
-test('default: private S3 through OAC, host-to-folder function', () => {
-  expect(dist.DefaultCacheBehavior.FunctionAssociations[0].EventType).toBe('viewer-request');
-  template.resourceCountIs('AWS::CloudFront::OriginAccessControl', 1);
+test('landing page parts kept for later: private site bucket and host-to-folder function, nothing routed to them', () => {
+  template.resourceCountIs('AWS::CloudFront::Function', 1);
+  template.resourceCountIs('AWS::CloudFront::OriginAccessControl', 0);
+  template.hasResourceProperties('AWS::SSM::Parameter', { Name: '/shinro/live/edge/site-bucket' });
   template.hasResourceProperties('AWS::S3::Bucket', {
     PublicAccessBlockConfiguration: { BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true },
   });
