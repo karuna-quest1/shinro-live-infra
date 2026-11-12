@@ -207,7 +207,7 @@ Earlier note: Bundle in `assets/shinro-bundle/`; `bin/render.py` renders every e
 
 **By hand, around the deploy:**
 - Secret `shinro-live/cloudflare/dns-api-token`: a Cloudflare token limited to Zone > DNS > Edit on shinro.ai. Until it exists the consoles use a self-signed certificate.
-- Cloudflare A records, DNS only: `camunda-demo` and `temporal-demo` → `54.147.229.249`.
+- Cloudflare A records, DNS only: `camunda-demo` and `temporal-demo` → `54.147.229.249`. *Being replaced by CNAMEs to the console distribution (Step 5, 2026-11-12).*
 - Secrets `shinro-live/shinro/api-env` and `shinro-live/shinro/tool-exec-env`: the app team puts a JSON object of extra settings there (LLM keys and the rest).
 - Upload each stream's UI build to `s3://shinro-live-ui-<account>/<stream>/` (built with that stream's `VITE_API_URL`).
 
@@ -245,11 +245,18 @@ Both depend only on step 4 (EdgeStack needs the EIP; EKS needs the Shinro role f
 **Changes from the plan (shinro.ai's DNS is at Cloudflare):**
 - No Route 53 and no new certificate: the existing issued `shinro.ai` + `*.shinro.ai` certificate is reused.
 - Aliases are the stream pages only (`temporal.shinro.ai`), not `shinro.ai` or `*.shinro.ai`: the apex and `demo.shinro.ai` belong to other things, and each stream needs a Cloudflare record anyway. Adding a stream: config + deploy + one Cloudflare CNAME.
-- No `/oauth2/*` behaviour: the app signs users in itself under `/v2/oauth/*`; oauth2-proxy guards only the consoles, which don't use CloudFront.
+- No `/oauth2/*` behaviour: the app signs users in itself under `/v2/oauth/*`; oauth2-proxy guards only the consoles, which have their own distribution (below).
 - Origin: the Shinro EC2's fixed public name on :80, with `X-Shinro-Origin` resolved from Secrets Manager at deploy.
 - `/assets/*` cache is keyed by `Host`, since each stream has its own UI build.
 
-**By hand after deploying:** Cloudflare CNAME `temporal` → the distribution's domain (printed), DNS only. Upload the public page to `s3://shinro-live-site-<account>/temporal.shinro.ai/index.html`; until then `/` returns 403.
+**Updated 2026-11-12: the app owns `/`.** The default behaviour goes to the Shinro EC2, so `temporal.shinro.ai` opens the login page and then the chat (`/`, `/auth/callback`, `/settings/:tab`, `/chat/:id` are all app pages; on an empty landing bucket login would break). This was already live since a hand deploy on 2026-11-11 17:41 UTC; the code now says so. The site bucket (re-adopted with `cdk import`) and the `HostToFolder` function are kept, unrouted, for a future landing page, which needs its own path or hostname.
+
+**Consoles through CloudFront (2026-11-12, Phase A):** `ConsoleDistribution` (`d2cio87q07l3i7.cloudfront.net`) serves `camunda-demo` and `temporal-demo` with the same ACM certificate, origin and origin secret; nginx serves them on :80 (no secret → 301 to https). Checked through CloudFront with the hosts pinned: Amazon certificate, `/` → `/operate` → oauth2-proxy login, Temporal UI → login, WebSocket upgrade reaches the origin. Plan: `docs/superpowers/plans/2026-11-12-consoles-behind-cloudfront.md`.
+- [ ] *(manual)* Cloudflare: replace the A records `camunda-demo` and `temporal-demo` with CNAMEs → `d2cio87q07l3i7.cloudfront.net`, DNS only.
+- [ ] Browser check through the CNAMEs (login → Operate; migration → Temporal UI; 10 minutes of use, watch for 504s).
+- [ ] Phase C, 24 h after that: remove :443, certbot, the Cloudflare token grant, the public security group and the certificate alarm.
+
+**By hand after deploying:** Cloudflare CNAME `temporal` → the distribution's domain (printed), DNS only.
 
 **Depends on:** 4
 
