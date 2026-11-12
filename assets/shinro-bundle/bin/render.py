@@ -394,6 +394,9 @@ server {{
   listen 80;
   server_name {host};
   if ($origin_ok = 0) {{ return 301 https://$host$request_uri; }}
+  # This connection is plain http from CloudFront; the browser's is https.
+  # Relative Location headers, so nginx's own redirects never say http://.
+  absolute_redirect off;
 {body}
 }}
 server {{{tls(host)}

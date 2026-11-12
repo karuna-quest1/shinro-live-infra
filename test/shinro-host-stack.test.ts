@@ -260,6 +260,12 @@ describe('render.py (with a fake AWS CLI)', () => {
     expect(http).toContain('proxy_set_header Upgrade           $http_upgrade;');
   });
 
+  test("console :80 blocks send relative redirects, or nginx's own `return 302 /operate` points browsers at http://", () => {
+    for (const host of ['camunda-demo.shinro.ai', 'temporal-demo.shinro.ai']) {
+      expect(httpBlock(run('nginx/20-consoles.conf'), host)).toContain('absolute_redirect off;');
+    }
+  });
+
   test('no separate plain-HTTP redirect server for console hosts any more', () => {
     expect(run('nginx/20-consoles.conf')).not.toContain('Plain HTTP on a console host goes to HTTPS');
   });
