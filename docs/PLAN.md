@@ -3,6 +3,7 @@
 **This is the short version.** Same plan, same section numbers as [`PLAN-v2.md`](PLAN-v2.md) — so "decision 4.6" or "gotcha 5.20" means the same thing in both. v2 explains every term from the ground up and holds the glossary; this one assumes you know them. **Keep the two in step when either changes.**
 
 **Sources:** the *Camunda to Temporal Changes* tab of `Shinro Deployment Tracker (6).xlsx` (rows cited `T-10`, `T-28`, …), `image.png` (an earlier diagram — hostnames and pools have since changed), and the app team's demo **`DEPLOYMENT.md`** (branch `feat/demo-graph`, PR #395), whose decisions are folded in and marked **(DEPLOYMENT)**. `../shinro-demo-infra` is a source of **patterns only** — none of its EC2, stack, SSM names or ECR repos are reused.
+> The two source files above (the tracker spreadsheet and `image.png`) were removed from the repo on 2026-11-13 as superseded; they remain in git history.
 
 ## Design decisions baked in
 

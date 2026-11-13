@@ -3,6 +3,7 @@
 > **What this document is.** The deployment plan for the Shinro demo infrastructure, written so that every technical term is explained from the ground up — with an everyday analogy — *before* it is used. No technical term has been removed. Each one is explained so you can use it confidently and explain it to someone else.
 >
 > **Sources.** The **Camunda to Temporal Changes** tab of `Shinro Deployment Tracker (6).xlsx` (rows cited as `T-10`, `T-28`, … meaning "tracker row 10, row 28") and `image.png` (the architecture diagram). The app team's **demo `DEPLOYMENT.md`** (branch `feat/demo-graph`, PR #395) — what the demo as actually built needs from this plan; its decisions and gaps are folded in below and marked **(DEPLOYMENT)**. The old repo `../shinro-demo-infra` is used **only as a source of patterns**. We do not reuse its EC2 instance, its stack, its SSM names or its ECR repositories.
+> The two source files above (the tracker spreadsheet and `image.png`) were removed from the repo on 2026-11-13 as superseded; they remain in git history.
 
 ---
 
