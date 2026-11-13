@@ -24,7 +24,7 @@ lib/stacks/                one file per stack
 lib/constructs/            reusable pieces: ci-role.ts (GitHub release role), ssm-params.ts
 assets/                    bundles synced to the EC2 hosts (compose, nginx, render scripts)
 test/                      Jest tests, incl. cdk-nag and render.py
-scripts/                   operator scripts: push-images.sh (manual image push)
+scripts/                   operator scripts: delete-sandbox.py (see scripts/README.md)
 ```
 
 ## Streams
