@@ -94,7 +94,7 @@ camunda:
         # (section 9, item 2).
         readonly-admin:
           users:
-            - demo
+            - ${CAMUNDA_DEMO_USERNAME}
           clients:
             - shinro-assessment
 

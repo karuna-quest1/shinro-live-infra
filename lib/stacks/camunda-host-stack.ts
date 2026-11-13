@@ -8,7 +8,7 @@ import * as s3assets from 'aws-cdk-lib/aws-s3-assets';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
-import { CAMUNDA_PUBLIC_HOST, PREFIX, SIZES, SSM_PREFIX } from '../config';
+import { CAMUNDA_DEMO_USERNAME, CAMUNDA_PUBLIC_HOST, PREFIX, SIZES, SSM_PREFIX } from '../config';
 import { SsmParams, ssmName } from '../constructs/ssm-params';
 
 export const BUNDLE_DIR = path.join(__dirname, '..', '..', 'assets', 'camunda-bundle');
@@ -25,6 +25,12 @@ export const CAMUNDA_SECRETS = [
   'oms-app-client-secret',
   /** The only one Shinro's tool-exec is given (CAMUNDA-DEPLOYMENT section 6). */
   'shinro-assessment-client-secret',
+  /**
+   * The read-only Operate login every prospect shares. Not secret in the usual
+   * sense -- the chat prints it beside the console link -- but generated, so
+   * `demo`/`demo` is never what guards Operate behind the Cognito gate.
+   */
+  'demo-user-password',
 ] as const;
 
 export const BACKUP_TAG = { key: 'shinro-live:backup', value: 'camunda-daily' } as const;
@@ -222,6 +228,7 @@ export class CamundaHostStack extends cdk.Stack {
     new SsmParams(this, 'Params', 'camunda', {
       'public-host': CAMUNDA_PUBLIC_HOST,
       'instance-id': this.instance.instanceId,
+      'demo-username': CAMUNDA_DEMO_USERNAME,
     });
     // Read by the Shinro EC2 at boot for nginx and tool-exec (CAMUNDA-DEPLOYMENT section 3).
     new ssm.StringParameter(this, 'PrivateIp', {

@@ -25,5 +25,9 @@ umask 077
   echo "IDENTITY_CLIENT_SECRET=$(secret identity-client-secret)"
   echo "OMS_APP_CLIENT_SECRET=$(secret oms-app-client-secret)"
   echo "SHINRO_ASSESSMENT_CLIENT_SECRET=$(secret shinro-assessment-client-secret)"
+  # The shared read-only Operate account. Changing the name seeds a SECOND
+  # Keycloak user: the old one keeps working until it is deleted by hand.
+  echo "CAMUNDA_DEMO_USERNAME=$(param demo-username)"
+  echo "CAMUNDA_DEMO_PASSWORD=$(secret demo-user-password)"
 } > .env.tmp
 mv .env.tmp .env

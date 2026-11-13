@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as cdk from 'aws-cdk-lib/core';
 import { Template } from 'aws-cdk-lib/assertions';
-import { INITIAL_RELEASE, parseStreams } from '../lib/config';
+import { CAMUNDA_DEMO_USERNAME, INITIAL_RELEASE, parseStreams } from '../lib/config';
 import { SHINRO_BUNDLE_DIR, ShinroHostStack } from '../lib/stacks/shinro-host-stack';
 
 const streams = parseStreams([
@@ -132,6 +132,7 @@ describe('render.py (with a fake AWS CLI)', () => {
     secrets: {
       'arn:cookie': 'c'.repeat(32),
       'shinro-live/camunda/shinro-assessment-client-secret': 'assess',
+      'shinro-live/camunda/demo-user-password': 'g'.repeat(40),
       // As long as the real one (48), so map sizing problems show up in nginx -t.
       'shinro-live/edge/origin-secret': 'o'.repeat(48),
       'shinro-live/shinro/api-env': '{"LLM_API_KEY":"k","FRONTEND_URL":"https://override.shinro.ai"}',
@@ -186,6 +187,8 @@ describe('render.py (with a fake AWS CLI)', () => {
       DEMO_SANDBOX_NODE_POOL: 'sandbox',
       DEMO_SESSION_API_URL: 'https://temporal.shinro.ai/v2',
       DEMO_CAMUNDA_CONSOLE_URL: 'https://camunda-demo.shinro.ai/operate',
+      DEMO_CAMUNDA_CONSOLE_USERNAME: CAMUNDA_DEMO_USERNAME,
+      DEMO_CAMUNDA_CONSOLE_PASSWORD: 'g'.repeat(40),
       DEMO_TEMPORAL_UI_ROUTE_SECRET: 'r'.repeat(48),
       DEMO_METRICS_NAMESPACE: 'ShinroLive/App',
       API_DOCS_ENABLED: 'false',

@@ -17,6 +17,21 @@ export const CAMUNDA_PUBLIC_HOST = `camunda-demo.${DOMAIN}`;
 /** Each user's own Temporal UI, routed by who is logged in (decision 4.6). Owned by the temporal stream. */
 export const TEMPORAL_UI_PUBLIC_HOST = `temporal-demo.${DOMAIN}`;
 
+/**
+ * The read-only Operate account every prospect shares, printed in the chat beside
+ * the console link. Two bundles need it -- camunda's identity seeds it, shinro's
+ * api.env prints it -- so it is published to SSM rather than written in both.
+ * Its password is generated (shinro-live/camunda/demo-user-password).
+ *
+ * The random tail is the point: `demo` was guessable, this is not. The readable
+ * prefix is kept so the name is recognisable in Keycloak's user list and in
+ * Operate's audit trail, where a bare uid would say nothing.
+ *
+ * Changing it seeds a SECOND Keycloak user and leaves the old one working.
+ * Delete the old one by hand (CAMUNDA-DEPLOYMENT section 5.5).
+ */
+export const CAMUNDA_DEMO_USERNAME = 'camunda-viewer-ee1eace561';
+
 /** Prefix for stack ids, resource names, ECR repos and log groups. `live`, never `demo` (PLAN 5.13). */
 export const PREFIX = 'shinro-live';
 export const STACK_PREFIX = 'ShinroLive';

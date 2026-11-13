@@ -9,6 +9,7 @@ import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct, IConstruct } from 'constructs';
 import {
+  CAMUNDA_DEMO_USERNAME,
   CAMUNDA_PUBLIC_HOST,
   DOMAIN,
   EKS,
@@ -186,6 +187,7 @@ export class ShinroHostStack extends cdk.Stack {
         uiBucketHost: `${this.uiBucket.bucketName}.s3.${this.region}.amazonaws.com`,
         docsBucket: this.docsBucket.bucketName,
         camundaHost: CAMUNDA_PUBLIC_HOST,
+        camundaDemoUsername: CAMUNDA_DEMO_USERNAME,
         temporalUiHost: TEMPORAL_UI_PUBLIC_HOST,
         sessionTtlHours: SESSIONS.ttlHours,
         sessionMaxActive: SESSIONS.maxActive,

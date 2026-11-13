@@ -45,6 +45,9 @@ services:
       CAMUNDA_IDENTITY_ISSUERBACKENDURL: http://keycloak:18080/auth/realms/camunda-platform
       CAMUNDA_IDENTITY_BASEURL: http://identity:8084
       CAMUNDA_IDENTITY_AUDIENCE: orchestration-api
+      # .orchestration/application.yaml grants this user readonly-admin. It must
+      # be the same name identity seeds, or the account logs in and sees nothing.
+      CAMUNDA_DEMO_USERNAME: ${CAMUNDA_DEMO_USERNAME}
       # Shared by every prospect; 512m upstream is sized for a laptop.
       JAVA_TOOL_OPTIONS: "-Xms2g -Xmx2g"
     restart: unless-stopped
@@ -85,6 +88,9 @@ services:
       CAMUNDA_IDENTITY_CLIENT_SECRET: ${IDENTITY_CLIENT_SECRET}
       KEYCLOAK_ADMIN_USER: ${KEYCLOAK_ADMIN_USER}
       KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      # The shared read-only Operate account this container seeds into Keycloak.
+      CAMUNDA_DEMO_USERNAME: ${CAMUNDA_DEMO_USERNAME}
+      CAMUNDA_DEMO_PASSWORD: ${CAMUNDA_DEMO_PASSWORD}
       HOST: ${HOST}
       KEYCLOAK_HOST: ${KEYCLOAK_HOST}
       RESOURCE_PERMISSIONS_ENABLED: ${RESOURCE_AUTHORIZATIONS_ENABLED}

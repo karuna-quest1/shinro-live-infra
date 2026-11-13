@@ -15,6 +15,7 @@ const instance = Object.values(resources).find((r) => r.Type === 'AWS::EC2::Inst
 const bundleFile = (f: string) => fs.readFileSync(path.join(BUNDLE_DIR, f), 'utf8');
 const compose = yaml.load(bundleFile('docker-compose.yaml')) as { services: Record<string, any> };
 const orchestrationConfig = yaml.load(bundleFile('.orchestration/application.yaml')) as any;
+const identityConfig = yaml.load(bundleFile('.identity/application.yaml')) as any;
 
 describe('instance', () => {
   test('private: no public IP, private subnet, Camunda security group', () => {
@@ -69,7 +70,7 @@ describe('secrets', () => {
 
 test('publishes what the Shinro EC2 needs', () => {
   template.hasResourceProperties('AWS::SSM::Parameter', { Name: '/shinro/live/camunda-private-ip' });
-  for (const name of ['public-host', 'bundle-s3-url', 'instance-id']) {
+  for (const name of ['public-host', 'bundle-s3-url', 'instance-id', 'demo-username']) {
     template.hasResourceProperties('AWS::SSM::Parameter', { Name: `/shinro/live/camunda/${name}` });
   }
   template.hasResourceProperties('AWS::SSM::Parameter', { Value: CAMUNDA_PUBLIC_HOST });
@@ -99,6 +100,30 @@ describe('bundle', () => {
     const admin = orchestrationConfig.camunda.security.initialization.defaultRoles.admin;
     expect(admin.users ?? []).not.toContain('demo');
     expect(admin.clients).not.toContain('shinro-assessment');
+  });
+
+  test("the shared Operate account is generated, or Camunda's login is still demo/demo", () => {
+    const [user, ...rest] = identityConfig.keycloak.users;
+    expect(rest).toHaveLength(0);
+    expect(user.username).toBe('${CAMUNDA_DEMO_USERNAME}');
+    expect(user.password).toBe('${CAMUNDA_DEMO_PASSWORD}');
+    expect(bundleFile('.identity/application.yaml')).not.toMatch(/username: "demo"|password: "demo"/);
+  });
+
+  test('the readonly-admin grant follows the seeded name, or the account logs in and sees nothing', () => {
+    const readonly = orchestrationConfig.camunda.security.initialization.defaultRoles['readonly-admin'];
+    expect(readonly.users).toEqual(['${CAMUNDA_DEMO_USERNAME}']);
+    expect(identityConfig.keycloak.users[0].username).toBe(readonly.users[0]);
+  });
+
+  test('both halves of the Operate account are resolved at boot, not baked into the bundle', () => {
+    const renderEnv = bundleFile('bin/render-env.sh');
+    expect(renderEnv).toContain('CAMUNDA_DEMO_USERNAME=$(param demo-username)');
+    expect(renderEnv).toContain('CAMUNDA_DEMO_PASSWORD=$(secret demo-user-password)');
+    for (const service of ['identity', 'orchestration']) {
+      expect(compose.services[service].environment.CAMUNDA_DEMO_USERNAME).toBe('${CAMUNDA_DEMO_USERNAME}');
+    }
+    expect(compose.services.identity.environment.CAMUNDA_DEMO_PASSWORD).toBe('${CAMUNDA_DEMO_PASSWORD}');
   });
 
   test('no literal secrets or upstream defaults in the bundle', () => {

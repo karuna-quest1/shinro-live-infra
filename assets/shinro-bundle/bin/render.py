@@ -170,8 +170,13 @@ api_env = {
     "DEMO_TEMPORAL_UI_URL": f"https://{cfg['temporalUiHost']}",
     "DEMO_SESSION_TTL_HOURS": str(cfg["sessionTtlHours"]),
     "DEMO_SESSION_MAX_ACTIVE": str(cfg["sessionMaxActive"]),
-    # The Camunda console link in the chat, shown with the shared read-only demo / demo login.
+    # The Camunda console link in the chat, shown with the shared read-only login
+    # below. Both halves must be the ones camunda-bundle's identity container
+    # seeded into Keycloak -- print anything else and the prospect gets
+    # "Invalid username or password" on Operate (CAMUNDA-DEPLOYMENT 5.5).
     "DEMO_CAMUNDA_CONSOLE_URL": f"https://{cfg['camundaHost']}/operate",
+    "DEMO_CAMUNDA_CONSOLE_USERNAME": cfg["camundaDemoUsername"],
+    "DEMO_CAMUNDA_CONSOLE_PASSWORD": secret("shinro-live/camunda/demo-user-password"),
     # nginx sends it on the internal Temporal UI lookup; the API refuses the call without it.
     "DEMO_TEMPORAL_UI_ROUTE_SECRET": route_secret,
     # ActiveSessions, SessionStartFailures, LlmSpendUsd: the alarms wait for these (step 8).

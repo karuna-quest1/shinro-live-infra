@@ -107,11 +107,13 @@ keycloak:
           - "/auth/login-callback"
   users:
     # Shared by every prospect; printed beside the link in the chat (section 1).
-    - username: "demo"
-      password: "demo"
-      firstName: "Demo"
-      lastName: "User"
-      email: "demo@example.org"
+    # LIVE: was demo/demo. render-env.sh resolves the name from SSM and the
+    # password from Secrets Manager, so neither half is a default (section 5.5).
+    - username: "${CAMUNDA_DEMO_USERNAME}"
+      password: "${CAMUNDA_DEMO_PASSWORD}"
+      firstName: "Camunda"
+      lastName: "Viewer"
+      email: "${CAMUNDA_DEMO_USERNAME}@example.org"
       # LIVE: was ManagementIdentity, Optimize, Web Modeler, Web Modeler Admin,
       # Console, Orchestration.
       roles:

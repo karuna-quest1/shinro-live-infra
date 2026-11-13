@@ -15,7 +15,7 @@ How the Camunda 8.8 demo instance is deployed and reached, and what credentials 
 **Two gates, no federation.**
 
 ```
-browser → nginx → oauth2-proxy (Cognito) → Camunda → Keycloak → demo/demo → Operate
+browser → nginx → oauth2-proxy (Cognito) → Camunda → Keycloak → camunda-viewer-… → Operate
                   └── only invited users get this far ──┘
 ```
 
@@ -181,7 +181,7 @@ Four identities. Keeping them separate is what makes "read-only" true.
 | Identity | Type | Used by | Permissions |
 |---|---|---|---|
 | `orchestration` | client | **Camunda itself**, for its own browser login | Leave exactly as-is |
-| `demo` | user | Every prospect, in a browser | **Read only** |
+| `camunda-viewer-<uid>` | user | Every prospect, in a browser | **Read only** |
 | `shinro-assessment` | client (m2m) | tool-exec / the assessment tool | **Read only** |
 | `oms-app` | client (m2m) | The OMS job worker | Write — it drives the demo workflows |
 
@@ -263,6 +263,48 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)[0]["redirectUris"])'
 ```
 
+### 5.5 The shared Operate account is generated, not `demo`/`demo`
+
+The account every prospect signs in with used to be Camunda's upstream default,
+`demo`/`demo`, written into `.identity/application.yaml`. It now comes from
+outside the bundle:
+
+| Half | Source | Read by |
+|---|---|---|
+| username | `CAMUNDA_DEMO_USERNAME` in `lib/config.ts` (readable prefix + random tail) → SSM `/shinro/live/camunda/demo-username` | `bin/render-env.sh`, and `render.py` via the Shinro host config |
+| password | Secrets Manager `shinro-live/camunda/demo-user-password` (40 chars, generated) | `bin/render-env.sh` only |
+
+It is printed in the chat beside the console link, so it is not a secret in the
+usual sense — it is one more thing a prospect cannot guess, behind the Cognito
+gate that already stops everyone else.
+
+**Three files move together.** The name appears in `.identity/application.yaml`
+(which seeds the Keycloak user), in `.orchestration/application.yaml` (which
+grants it `readonly-admin`) and in the app's `etc/demo_catalog.yaml` (which
+prints it). Change one and the account either cannot sign in, signs in and sees
+nothing, or is advertised to the prospect under the wrong name.
+
+**Changing the name leaves the old user behind.** Identity creates users that are
+missing; it does not rename them. After a name change the realm holds *both*, and
+the old one keeps working with its old password until it is deleted:
+
+```bash
+TOKEN=$(curl -fsS -d client_id=admin-cli -d "username=$KEYCLOAK_ADMIN_USER" \
+  -d "password=$KEYCLOAK_ADMIN_PASSWORD" -d grant_type=password \
+  http://localhost:18080/auth/realms/master/protocol/openid-connect/token \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["access_token"])')
+
+# List what the realm actually holds, then delete the stale one by id.
+curl -fsS -H "Authorization: Bearer $TOKEN" \
+  'http://localhost:18080/auth/admin/realms/camunda-platform/users?briefRepresentation=true'
+curl -fsS -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "http://localhost:18080/auth/admin/realms/camunda-platform/users/<id>"
+```
+
+Whether restarting `identity` updates an *existing* user's password is untested
+here — nothing is logged either way. Do not rely on it: deleting the old user and
+letting the create path run is the behaviour that is known to work.
+
 ## 6. What Shinro is given
 
 Two consumers, and they share nothing.
@@ -326,7 +368,7 @@ Everything else — auth method, audience, the token URL's path — is unchanged
 GET /operate          → 302  /oauth2/authorization/oidc
                       → 302  https://<host>/auth/realms/camunda-platform/protocol/openid-connect/auth
                              ?redirect_uri=https://<host>/sso-callback     ← https, correct host
-POST demo/demo        → 302  /sso-callback?code=…
+POST camunda-viewer-… → 302  /sso-callback?code=…
                       → 200  /operate?continue      <title>Operate</title>
 ```
 
