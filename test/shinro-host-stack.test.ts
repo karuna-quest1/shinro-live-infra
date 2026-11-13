@@ -255,17 +255,43 @@ describe('render.py (with a fake AWS CLI)', () => {
 
   test('both oauth2 locations have header room, or an oversized Set-Cookie is a 500', () => {
     const consoles = run('nginx/20-consoles.conf');
-    // One pair per console host and listener: /oauth2/ and the internal /oauth2/auth.
-    expect(consoles.match(/proxy_buffer_size 16k;/g)).toHaveLength(8);
+    // One pair per gated console host and listener: /oauth2/ and the internal /oauth2/auth.
+    // Only temporal-demo is gated (2 listeners x 2 locations); camunda-demo has no oauth2-proxy.
+    expect(consoles.match(/proxy_buffer_size 16k;/g)).toHaveLength(4);
     expect(consoles).toContain('proxy_busy_buffers_size 32k;');
   });
 
-  test("Camunda's own login path outranks the oauth2-proxy prefix, or Operate shows only '202 Authenticated'", () => {
-    const consoles = run('nginx/20-consoles.conf');
-    // Longer prefix than /oauth2/, so nginx picks it; the proxy keeps its own endpoints.
-    expect(consoles).toContain('location /oauth2/authorization/ {');
-    const camundaLogin = consoles.slice(consoles.indexOf('location /oauth2/authorization/ {'));
-    expect(camundaLogin).toContain('set $cam 10.60.20.5:8080;');
+  // One console's server blocks (both listeners), up to the next host's.
+  const hostBlocks = (c: string, host: string) => {
+    const first = c.indexOf(`server_name ${host};`);
+    expect(first).toBeGreaterThanOrEqual(0);
+    const other = host.startsWith('camunda') ? 'temporal-demo.shinro.ai' : 'camunda-demo.shinro.ai';
+    const next = c.indexOf(`server_name ${other};`, first);
+    return c.slice(first, next === -1 ? undefined : next);
+  };
+
+  test('Camunda console: no Cognito gate, only its own Keycloak login', () => {
+    const camunda = hostBlocks(run('nginx/20-consoles.conf'), 'camunda-demo.shinro.ai');
+    expect(camunda).not.toContain('auth_request');
+    expect(camunda).not.toContain('oauth2-proxy');
+    expect(camunda).toContain('set $cam 10.60.20.5:8080;');
+    expect(camunda).toContain('location ^~ /auth/realms/camunda-platform/ {');
+  });
+
+  test('Camunda console: Keycloak admin, master realm and account console refused; logins rate-limited', () => {
+    const c = run('nginx/20-consoles.conf');
+    const camunda = hostBlocks(c, 'camunda-demo.shinro.ai');
+    for (const path of ['/auth/admin/', '/auth/realms/master/', '/auth/realms/camunda-platform/account', '/auth/']) {
+      expect(camunda).toContain(`location ^~ ${path} { return 404; }`);
+    }
+    expect(c).toContain('limit_req_zone $binary_remote_addr zone=camunda_login:1m rate=10r/m;');
+    expect(camunda).toContain('limit_req zone=camunda_login burst=10 nodelay;');
+  });
+
+  test('Temporal console keeps its Cognito gate', () => {
+    const temporal = hostBlocks(run('nginx/20-consoles.conf'), 'temporal-demo.shinro.ai');
+    expect(temporal).toContain('auth_request /oauth2/auth;');
+    expect(temporal).toContain('error_page 401 = @signin;');
   });
 
   // The listen-80 server block for one console host, up to the next server block.
