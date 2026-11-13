@@ -96,6 +96,32 @@ describe('the reports bucket', () => {
   });
 });
 
+test('every secret render.py names is granted to the host role, or boot dies on AccessDenied', () => {
+  // The render.py tests stub the AWS CLI, so IAM is never exercised there: a new
+  // secret() call passes them and still aborts bootstrap.sh before `compose up`.
+  // Regression, 2026-11-13 (shinro-live/camunda/demo-user-password).
+  const source = fs.readFileSync(path.join(SHINRO_BUNDLE_DIR, 'bin', 'render.py'), 'utf8');
+  const named = [...source.matchAll(/(?:json_)?secret\(\s*"(shinro-live\/[^"]+)"/g)].map((m) => m[1]);
+  expect(named.length).toBeGreaterThan(0);
+
+  const granted = ofType('AWS::IAM::Policy')
+    .flatMap((r) => r.Properties.PolicyDocument.Statement as { Action: unknown; Resource: unknown }[])
+    .filter((st) => JSON.stringify(st.Action).includes('secretsmanager:GetSecretValue'))
+    .flatMap((st) => (Array.isArray(st.Resource) ? st.Resource : [st.Resource]))
+    .filter((r): r is string => typeof r === 'string');
+
+  // Each granted arn is a literal name, a `-??????` suffix pattern, or a `/*` prefix.
+  const covers = (name: string) =>
+    granted.some((arn) => {
+      const resource = arn.slice(arn.indexOf(':secret:') + ':secret:'.length);
+      if (resource.endsWith('/*')) return name.startsWith(resource.slice(0, -1));
+      if (resource.endsWith('-??????')) return name === resource.slice(0, -'-??????'.length);
+      return name === resource;
+    });
+
+  expect(named.filter((n) => !covers(n))).toEqual([]);
+});
+
 describe('render.py (with a fake AWS CLI)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'render-'));
   const bundle = path.join(dir, 'bundle');

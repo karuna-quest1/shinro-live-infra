@@ -235,6 +235,8 @@ export class ShinroHostStack extends cdk.Stack {
         ['secretsmanager:GetSecretValue'],
         [
           arn('secretsmanager', `secret:${PREFIX}/camunda/shinro-assessment-client-secret-??????`),
+          // The shared Operate login render.py prints in the chat (CAMUNDA-DEPLOYMENT 5.5).
+          arn('secretsmanager', `secret:${PREFIX}/camunda/demo-user-password-??????`),
           arn('secretsmanager', `secret:${PREFIX}/oauth2-proxy/*`),
           arn('secretsmanager', `secret:${PREFIX}/edge/origin-secret-??????`),
           arn('secretsmanager', `secret:${PREFIX}/shinro/*`),
@@ -328,6 +330,7 @@ export class ShinroHostStack extends cdk.Stack {
       ),
       [role, `AwsSolutions-IAM5[Resource::${arn('ssm', 'parameter/shinro/live/*')}]`, 'Read-only, own prefix: streams, identity, camunda, eks and release values.'],
       [role, `AwsSolutions-IAM5[Resource::${arn('secretsmanager', `secret:${PREFIX}/camunda/shinro-assessment-client-secret-??????`)}]`, "Secrets Manager's random name suffix."],
+      [role, `AwsSolutions-IAM5[Resource::${arn('secretsmanager', `secret:${PREFIX}/camunda/demo-user-password-??????`)}]`, "Secrets Manager's random name suffix."],
       [role, `AwsSolutions-IAM5[Resource::${arn('secretsmanager', `secret:${PREFIX}/oauth2-proxy/*`)}]`, 'One cookie secret per stream.'],
       [role, `AwsSolutions-IAM5[Resource::${arn('secretsmanager', `secret:${PREFIX}/edge/origin-secret-??????`)}]`, "Secrets Manager's random name suffix."],
       [role, `AwsSolutions-IAM5[Resource::${arn('secretsmanager', `secret:${PREFIX}/shinro/*`)}]`, "The app team's settings secrets."],
