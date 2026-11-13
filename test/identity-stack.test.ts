@@ -1,5 +1,5 @@
 import * as cdk from 'aws-cdk-lib/core';
-import { Template } from 'aws-cdk-lib/assertions';
+import { Match, Template } from 'aws-cdk-lib/assertions';
 import { IDENTITY, LiveConfig, parseStreams } from '../lib/config';
 import { IdentityStack, USER_ADMIN_ACTIONS } from '../lib/stacks/identity-stack';
 
@@ -158,4 +158,38 @@ test('user-admin role: only the runbook actions, only on the demo pool', () => {
   expect(statements).toHaveLength(1);
   expect([...statements[0].Action].sort()).toEqual([...USER_ADMIN_ACTIONS].sort());
   expect(JSON.stringify(statements[0].Resource)).toContain('PoolD3F588B8');
+});
+
+describe('bounces and complaints', () => {
+  const t = synth({ sesDomainVerified: true });
+
+  test('one configuration set, default for the domain and used by Cognito', () => {
+    t.hasResourceProperties('AWS::SES::ConfigurationSet', {
+      Name: IDENTITY.sesConfigurationSet,
+      ReputationOptions: { ReputationMetricsEnabled: true },
+      SuppressionOptions: { SuppressedReasons: ['BOUNCE', 'COMPLAINT'] },
+    });
+    t.hasResourceProperties('AWS::SES::EmailIdentity', {
+      ConfigurationSetAttributes: { ConfigurationSetName: { Ref: Match.stringLikeRegexp('^EmailEvents') } },
+    });
+    t.hasResourceProperties('AWS::Cognito::UserPool', {
+      EmailConfiguration: { ConfigurationSet: { Ref: Match.stringLikeRegexp('^EmailEvents') } },
+    });
+  });
+
+  test('bounce, complaint, reject and rendering failure go to the feedback topic; deliveries do not', () => {
+    const [, dest] = ofType(t, 'AWS::SES::ConfigurationSetEventDestination')[0];
+    const d = dest.Properties.EventDestination;
+    expect(d.Enabled).not.toBe(false);
+    expect([...d.MatchingEventTypes].sort()).toEqual(['bounce', 'complaint', 'reject', 'renderingFailure']);
+    expect(d.SnsDestination.TopicARN).toEqual({ Ref: expect.stringMatching(/^EmailFeedback/) });
+    t.hasResourceProperties('AWS::SNS::Topic', { TopicName: 'shinro-live-email-feedback' });
+  });
+
+  test('feedback emails subscribe to the topic', () => {
+    const app = new cdk.App();
+    const full: LiveConfig = { streams: parseStreams([temporal]), sesDomainVerified: true };
+    const s = Template.fromStack(new IdentityStack(app, 'IdFb', { env, config: full, feedbackEmails: ['ops@example.com'] }));
+    s.hasResourceProperties('AWS::SNS::Subscription', { Protocol: 'email', Endpoint: 'ops@example.com' });
+  });
 });

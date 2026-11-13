@@ -100,3 +100,8 @@ describe('console distribution', () => {
     expect(JSON.stringify(template.toJSON())).not.toContain('console-distribution-id');
   });
 });
+
+test('SES reputation alarms sit below the AWS review thresholds', () => {
+  expect(byName('ses-bounce-rate')).toMatchObject({ Namespace: 'AWS/SES', MetricName: 'Reputation.BounceRate', Threshold: 0.04 });
+  expect(byName('ses-complaint-rate')).toMatchObject({ Namespace: 'AWS/SES', MetricName: 'Reputation.ComplaintRate', Threshold: 0.0008 });
+});

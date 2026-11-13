@@ -130,6 +130,8 @@ Looped over `shinro:streams`:
 
 Not built: a Cognito `camunda` resource server or `camunda-assessment` client. Camunda uses Keycloak (4.20).
 
+- [x] Bounces and complaints (2026-11-13, not yet deployed): SES configuration set `shinro-live-email` is the domain's default and Cognito's. It sends bounce, complaint, reject and rendering-failure events to SNS topic `shinro-live-email-feedback` (emails the `shinro:alarmEmails` list; each confirms once). Account suppression list (bounces, complaints) stays on. Reputation alarms in step 8.
+- [ ] *(manual)* DMARC TXT in Cloudflare: `_dmarc.shinro.ai` → `v=DMARC1; p=none; rua=mailto:<team mailbox>` (not added yet as of 2026-11-13).
 - [ ] *(manual)* **Request SES production access right after deploying.** It takes about a day and blocks step 2a.
 
 **Check:** a test user (on a verified address while SES is still in sandbox) gets an OTP email and signs in on the Managed Login page.
@@ -158,6 +160,13 @@ Not built: a Cognito `camunda` resource server or `camunda-assessment` client. C
 - [ ] *(manual)* If OTP fails from `FORCE_CHANGE_PASSWORD`, add a `--permanent` random password step (5.15).
 
 **Check:** the code arrives and login works; after `admin-disable-user` it doesn't.
+
+**Bounces and complaints** (an email from `shinro-live-email-feedback`, or a `ses-*-rate` alarm):
+- **Hard bounce** (`bounceType: Permanent`): the address doesn't exist. SES has put it on the suppression list, so that person gets no codes. Check the HubSpot request for a typo. Typo: delete the Cognito user, add the right address. No typo: delete the user and tell sales.
+- **Soft bounce** (`Transient`: mailbox full, greylisting): nothing to do unless it repeats for the same address.
+- **Complaint** (marked as spam): delete the Cognito user, tell sales, never re-add. Remove from the suppression list only if they ask in writing.
+- To re-allow a fixed address: `aws sesv2 delete-suppressed-destination --email-address <addr>`.
+- Before adding users, check the address (no typos, a real company domain). Every bounce counts against the 5% AWS review threshold.
 
 ### Step 3b: CamundaHostStack (T-10, T-11, T-12, T-14, T-15, T-16, T-19, T-20)
 **Status:** deployed 2026-11-10 as `ShinroLiveCamundaHost` (`i-05742429429d6e48c`); first boot took about 7 minutes. Checked over SSM the same day:
@@ -351,6 +360,7 @@ Earlier note: Kubernetes 1.36, `aws-eks-v2`, node groups (not Auto Mode). The Sh
 - [x] Log group per Compose service, including each oauth2-proxy (in the host stacks). Container Insights: with EKS.
 - [x] Alarms: Camunda and Shinro memory/disk/status/containers, certificate expiry, CloudFront 5xx, session count vs 20, failed session starts, LLM spend per day, AWS Budgets. EKS alarms: with EKS.
 - [x] Metric filter on oauth2-proxy 403s, which signals a wrong-group onboarding (5.18).
+- [x] SES reputation alarms (2026-11-13, not yet deployed): `ses-bounce-rate` at 4% (AWS reviews at 5%, may pause at 10%) and `ses-complaint-rate` at 0.08% (reviews at 0.1%, pauses at 0.5%). A pause stops every sign-in code. Dashboard row: emails sent / bounced / complained per day, and both rates.
 - [x] SNS topic → team email.
 - [x] ~~In-VPC Go module proxy~~: dropped; sandboxes use the public registries.
 

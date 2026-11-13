@@ -121,6 +121,12 @@ export const IDENTITY = {
   poolName: 'shinro-live-demo',
   fromEmail: `no-reply@${DOMAIN}`,
   fromName: 'Shinro',
+  /**
+   * Every email from shinro.ai goes through this SES configuration set (the
+   * identity's default, and Cognito's). It sends bounces and complaints to the
+   * email-feedback topic and keeps reputation metrics for the alarms.
+   */
+  sesConfigurationSet: `${PREFIX}-email`,
   /** oauth2-proxy cookie and refresh token lifetime (PLAN 1.8). */
   sessionHours: 8,
   /**

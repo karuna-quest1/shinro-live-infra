@@ -20,12 +20,18 @@ export function buildApp(app: cdk.App): void {
   const config = loadConfig(app);
 
   // Stacks are added wave by wave (docs/CDK-STEPS.md).
+  const alarmEmails = app.node.tryGetContext(OBSERVABILITY.alarmEmailsContextKey) ?? [];
+  if (!Array.isArray(alarmEmails) || alarmEmails.some((e) => typeof e !== 'string' || !e.includes('@'))) {
+    throw new Error(`Context "${OBSERVABILITY.alarmEmailsContextKey}" must be a list of email addresses`);
+  }
+
   // Wave B
   new NetworkStack(app, `${STACK_PREFIX}Network`, liveStackProps('Shinro live: VPC and security groups (step 1)'));
   new RegistryStack(app, `${STACK_PREFIX}Registry`, liveStackProps('Shinro live: ECR repositories (step 3a)'));
   new IdentityStack(app, `${STACK_PREFIX}Identity`, {
     ...liveStackProps('Shinro live: demo user pool, groups and oauth2-proxy clients (step 2)'),
     config,
+    feedbackEmails: alarmEmails,
   });
 
   // Wave C
@@ -45,10 +51,6 @@ export function buildApp(app: cdk.App): void {
   new EksStack(app, `${STACK_PREFIX}Eks`, liveStackProps('Shinro live: sandbox cluster, one namespace per demo user (step 6)'));
 
   // Wave F
-  const alarmEmails = app.node.tryGetContext(OBSERVABILITY.alarmEmailsContextKey) ?? [];
-  if (!Array.isArray(alarmEmails) || alarmEmails.some((e) => typeof e !== 'string' || !e.includes('@'))) {
-    throw new Error(`Context "${OBSERVABILITY.alarmEmailsContextKey}" must be a list of email addresses`);
-  }
   new ObservabilityStack(app, `${STACK_PREFIX}Observability`, {
     ...liveStackProps('Shinro live: alarms, dashboard and cost budget (step 8)'),
     config,

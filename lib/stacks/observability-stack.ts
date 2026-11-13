@@ -288,6 +288,33 @@ export class ObservabilityStack extends cdk.Stack {
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
 
+    // ---- SES reputation (sign-in codes from no-reply@shinro.ai) ----
+    // AWS reviews the account at 5% bounces / 0.1% complaints and may pause
+    // sending at 10% / 0.5%; that would stop every sign-in. Alarm well before.
+    // Each single bounce or complaint also arrives on the email-feedback topic (IdentityStack).
+    const sesMetric = (metricName: string, statistic: string, period = cdk.Duration.hours(1)) =>
+      new cloudwatch.Metric({ namespace: 'AWS/SES', metricName, period, statistic });
+    const bounceRate = sesMetric('Reputation.BounceRate', 'Maximum');
+    const complaintRate = sesMetric('Reputation.ComplaintRate', 'Maximum');
+    alarm('ses-bounce-rate', bounceRate, {
+      alarmDescription:
+        'SES bounce rate at 4%+ (AWS reviews at 5%, may pause sending at 10%, which stops sign-in codes). ' +
+        'Fix or delete the bounced users in Cognito (email-feedback topic has the addresses).',
+      threshold: 0.04,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    alarm('ses-complaint-rate', complaintRate, {
+      alarmDescription:
+        'SES complaint rate at 0.08%+ (AWS reviews at 0.1%, may pause sending at 0.5%). ' +
+        'Someone marked a sign-in email as spam: remove them from Cognito.',
+      threshold: 0.0008,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+
     // ---- Cost budget, for everything tagged Project=shinro-live ----
     new budgets.CfnBudget(this, 'Budget', {
       budget: {
@@ -325,6 +352,14 @@ export class ObservabilityStack extends cdk.Stack {
         [
           new cloudwatch.GraphWidget({ title: 'Active sessions (cap 20)', left: [activeSessions], width: 12 }),
           new cloudwatch.GraphWidget({ title: 'LLM spend per day ($)', left: [app(APP_METRICS.llmSpendUsd, 'Sum', cdk.Duration.days(1))], width: 12 }),
+        ],
+        [
+          new cloudwatch.GraphWidget({
+            title: 'Emails per day: sent, bounced, complained',
+            left: ['Send', 'Bounce', 'Complaint'].map((m) => sesMetric(m, 'Sum', cdk.Duration.days(1))),
+            width: 12,
+          }),
+          new cloudwatch.GraphWidget({ title: 'SES bounce and complaint rate', left: [bounceRate, complaintRate], leftYAxis: { min: 0 }, width: 12 }),
         ],
       ],
     });

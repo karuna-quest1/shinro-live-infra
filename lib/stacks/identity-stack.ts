@@ -3,12 +3,16 @@ import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as ses from 'aws-cdk-lib/aws-ses';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import { Construct } from 'constructs';
 import { DOMAIN, IDENTITY, LiveConfig, PREFIX, REGION, SES_VERIFIED_CONTEXT_KEY, streamHosts } from '../config';
 import { SsmParams } from '../constructs/ssm-params';
 
 export interface IdentityStackProps extends cdk.StackProps {
   readonly config: LiveConfig;
+  /** People emailed for each bounce or complaint (the alarm recipients). Each confirms once by email. */
+  readonly feedbackEmails?: readonly string[];
 }
 
 /** Actions the onboarding team may take, on the demo pool only (PLAN 1.8). */
@@ -47,9 +51,41 @@ export class IdentityStack extends cdk.Stack {
     super(scope, id, props);
     const { streams, sesDomainVerified } = props.config;
 
+    // ---- SES bounces and complaints ----
+    // The account suppression list already stops mail to addresses that bounced
+    // or complained. This tells us, so the user can be fixed or removed in
+    // Cognito (runbook: docs/CDK-STEPS.md step 2a, "Bounces and complaints").
+    // Delivery events are left out: one email per sign-in would be noise.
+    const feedbackTopic = new sns.Topic(this, 'EmailFeedback', {
+      topicName: `${PREFIX}-email-feedback`,
+      displayName: 'Shinro live: email bounces and complaints',
+      enforceSSL: true,
+    });
+    cdk.Validations.of(feedbackTopic).acknowledge({
+      id: 'AwsSolutions::AwsSolutions-SNS2',
+      reason: 'SES cannot publish to a topic encrypted with the AWS-managed SNS key; messages hold a recipient address and SMTP status only.',
+    });
+    for (const email of props.feedbackEmails ?? []) feedbackTopic.addSubscription(new subscriptions.EmailSubscription(email));
+
+    const emailEvents = new ses.ConfigurationSet(this, 'EmailEvents', {
+      configurationSetName: IDENTITY.sesConfigurationSet,
+      reputationMetrics: true,
+      suppressionReasons: ses.SuppressionReasons.BOUNCES_AND_COMPLAINTS,
+    });
+    emailEvents.addEventDestination('BouncesAndComplaints', {
+      destination: ses.EventDestination.snsTopic(feedbackTopic),
+      events: [
+        ses.EmailSendingEvent.BOUNCE,
+        ses.EmailSendingEvent.COMPLAINT,
+        ses.EmailSendingEvent.REJECT,
+        ses.EmailSendingEvent.RENDERING_FAILURE,
+      ],
+    });
+
     // ---- SES: send codes as no-reply@shinro.ai, signed with DKIM ----
     const sender = new ses.EmailIdentity(this, 'SenderDomain', {
       identity: ses.Identity.domain(DOMAIN),
+      configurationSet: emailEvents, // default for every send from the domain
     });
 
     // ---- The pool ----
@@ -66,6 +102,7 @@ export class IdentityStack extends cdk.Stack {
             fromName: IDENTITY.fromName,
             sesRegion: REGION,
             sesVerifiedDomain: DOMAIN,
+            configurationSetName: emailEvents.configurationSetName,
           })
         : cognito.UserPoolEmail.withCognito(),
       selfSignUpEnabled: false, // admin-create only (PLAN 1.8)
@@ -216,7 +253,8 @@ export class IdentityStack extends cdk.Stack {
     });
     new cdk.CfnOutput(this, 'CloudflareDmarc', {
       description: 'Add in Cloudflare: TXT record',
-      value: `_dmarc.${DOMAIN} -> "v=DMARC1; p=none;"`,
+      // p=none only reports; move to quarantine once reports show nothing else sends as shinro.ai.
+      value: `_dmarc.${DOMAIN} -> "v=DMARC1; p=none; rua=mailto:<a team mailbox>"`,
     });
     new cdk.CfnOutput(this, 'NextStep', {
       value: sesDomainVerified
