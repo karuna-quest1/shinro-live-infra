@@ -30,7 +30,7 @@ export const TEMPORAL_UI_PUBLIC_HOST = `temporal-demo.${DOMAIN}`;
  * Changing it seeds a SECOND Keycloak user and leaves the old one working.
  * Delete the old one by hand (CAMUNDA-DEPLOYMENT section 5.5).
  */
-export const CAMUNDA_DEMO_USERNAME = 'camunda-viewer-ee1eace561';
+export const CAMUNDA_DEMO_USERNAME = 'camunda-viewer-ffa16b6c';
 
 /** Prefix for stack ids, resource names, ECR repos and log groups. `live`, never `demo` (PLAN 5.13). */
 export const PREFIX = 'shinro-live';
