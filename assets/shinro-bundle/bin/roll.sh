@@ -36,4 +36,12 @@ compose up -d --remove-orphans "${services[@]}"
 # Configuration may have changed even when nginx itself didn't.
 compose exec -T nginx nginx -t && compose exec -T nginx nginx -s reload
 compose ps
+
+# Each release leaves the previous images on disk (about 2.9 GB: api + tool-exec);
+# several releases a day filled the 60 GB root disk in 3 days (2026-11-14).
+# Removes only images no container uses; keeps the last day's for a quick rollback.
+# A failed clean-up must not fail the release.
+log "removing unused images older than 24h"
+docker image prune -a -f --filter "until=24h" | tail -1 || true
+df -h / | tail -1
 log "done"
