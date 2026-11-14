@@ -185,7 +185,14 @@ export const HOST_ROLE_TAG = { key: 'shinro-live:role', shinroHost: 'shinro-host
 
 /** Off-the-shelf images on the Shinro EC2, pinned. */
 export const SUPPORT_IMAGES = {
-  nginx: 'nginx:1.30.6-alpine',
+  // -alpine-slim, not -alpine: the full image installs the xslt/njs/geoip/
+  // image-filter dynamic modules, and the xslt one pulls in libxslt, which
+  // carries three HIGH advisories (CVE-2026-9947, CVE-2026-125350,
+  // CVE-2026-87636) fixed in 1.1.43-r4. No official nginx tag ships that
+  // package yet -- 1.30.6-alpine, 1.30-alpine and 1.31-alpine all still have
+  // 1.1.43-r3 -- and we load no dynamic modules, so the slim variant drops
+  // the library instead of waiting for an upstream rebuild.
+  nginx: 'nginx:1.30.6-alpine-slim',
   oauth2Proxy: 'quay.io/oauth2-proxy/oauth2-proxy:v7.15.6',
   redis: 'redis/redis-stack-server:7.4.0-v8',
   certbot: 'certbot/dns-cloudflare:v5.9.0',
